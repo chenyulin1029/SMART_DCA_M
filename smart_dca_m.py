@@ -63,10 +63,8 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         for t in rotation:
             rotation[t] = 0
 
-    rotation[candidate] += 1
-    for t in rotation:
-        if t != candidate:
-            rotation[t] = 0
+    # Note: We do NOT update rotation state permanently here
+    # Just prepare suggestion
 
     price = prices[candidate]
     shares = np.floor(invest_amt / price * 1000) / 1000
@@ -77,7 +75,7 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         "Price": price,
         "Shares": shares,
         "Cost": cost,
-        "New Rotation": rotation
+        "Suggested Rotation": rotation  # for info only, no permanent update
     }
 
 # 4. UI Layout
@@ -91,58 +89,55 @@ amount = 450 if (custom_amt == 0 and preset == '$450 (Default)') else (600 if cu
 cutoff_date = st.date_input("Cutoff Date", value=get_last_trade_and_buy_dates()[1])
 buy_date = st.date_input("Buy Date", value=get_last_trade_and_buy_dates()[2])
 
-st.markdown("### Rotation Counts")
+st.markdown("### Rotation Counts (Input your current rotation state for suggestion)")
 col1, col2, col3 = st.columns(3)
 count_qqq = col1.number_input("QQQ", min_value=0, max_value=3, value=0)
 count_aapl = col2.number_input("AAPL", min_value=0, max_value=3, value=0)
 count_nvda = col3.number_input("NVDA", min_value=0, max_value=3, value=3)
 
-# 5. Session State Init
+# 5. Session State Init for manual history ONLY
 if 'history' not in st.session_state:
     st.session_state.history = pd.DataFrame(columns=["Buy Date", "Ticker", "Price", "Shares", "Cost"])
-if 'rotation' not in st.session_state:
-    st.session_state.rotation = {"QQQ": 0, "AAPL": 0, "NVDA": 0}
-if 'last_suggestion' not in st.session_state:
-    st.session_state.last_suggestion = None
 
-# 6. Run DCA Suggestion
-if st.button("Run Smart DCA"):
+# 6. Run DCA Suggestion ONLY (no save)
+if st.button("Run Smart DCA Suggestion"):
     try:
         tickers = validate_tickers(ticker_str)
         init_counts = {'QQQ': count_qqq, 'AAPL': count_aapl, 'NVDA': count_nvda}
         result = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
-        st.session_state.last_suggestion = {
-            "Buy Date": str(buy_date),
-            "Ticker": result["Buy Ticker"],
-            "Price": result["Price"],
-            "Shares": result["Shares"],
-            "Cost": result["Cost"],
-            "Rotation": result["New Rotation"]
-        }
 
+        # Just show suggestion, do NOT save it
         st.success("✅ Smart DCA Suggestion:")
-        st.write(st.session_state.last_suggestion)
+        st.write(result)
 
     except Exception as e:
         st.error(f"❌ {e}")
 
-# 7. Confirm Purchase
-if st.session_state.last_suggestion:
-    if st.button("✅ Confirm and Save Purchase"):
-        row = {
-            "Buy Date": st.session_state.last_suggestion["Buy Date"],
-            "Ticker": st.session_state.last_suggestion["Ticker"],
-            "Price": st.session_state.last_suggestion["Price"],
-            "Shares": st.session_state.last_suggestion["Shares"],
-            "Cost": st.session_state.last_suggestion["Cost"]
-        }
-        st.session_state.history = pd.concat(
-            [st.session_state.history, pd.DataFrame([row])],
-            ignore_index=True
-        )
-        st.session_state.rotation = st.session_state.last_suggestion["Rotation"]
-        st.success("💾 Purchase saved to history.")
-        st.session_state.last_suggestion = None
+# 7. Manual Buy Entry Form (only way to add to history)
+st.markdown("### ✍️ Manually Add Buy Record")
+with st.form("manual_entry"):
+    col1, col2 = st.columns(2)
+    m_ticker = col1.text_input("Ticker", value="AAPL").upper()
+    m_date = col2.date_input("Buy Date", value=datetime.date.today())
+
+    col3, col4 = st.columns(2)
+    m_qty = col3.number_input("Quantity", min_value=0.0, step=0.1)
+    m_price = col4.number_input("Buy Price", min_value=0.0, step=0.1)
+
+    submitted = st.form_submit_button("➕ Add Buy Record")
+    if submitted:
+        if m_ticker not in valid_tickers:
+            st.warning(f"Ticker `{m_ticker}` is not valid or not in S&P 500 list.")
+        else:
+            row = {
+                "Buy Date": str(m_date),
+                "Ticker": m_ticker,
+                "Price": m_price,
+                "Shares": m_qty,
+                "Cost": m_qty * m_price
+            }
+            st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([row])], ignore_index=True)
+            st.success("✅ Entry added!")
 
 # 8. Show Buy History Table
 st.markdown("### 📜 Purchase History")
@@ -163,3 +158,36 @@ if not st.session_state.history.empty:
     df = df.sort_values("Buy Date")
     df["Cumulative Cost"] = df["Cost"].cumsum()
     st.line_chart(df.set_index("Buy Date")["Cumulative Cost"])
+
+# 11. Portfolio Summary based on manual history + live price
+st.markdown("### 📊 Portfolio Summary")
+if not st.session_state.history.empty:
+    try:
+        latest_prices = yf.download(
+            tickers=st.session_state.history["Ticker"].unique().tolist(),
+            period="1d", progress=False
+        )["Adj Close"]
+
+        if isinstance(latest_prices, pd.Series):
+            latest_prices = latest_prices.to_frame(name="Adj Close")
+
+        ticker_latest = latest_prices.iloc[-1].to_dict()
+        df = st.session_state.history.copy()
+        df["Current Price"] = df["Ticker"].map(ticker_latest)
+        df["Current Value"] = df["Shares"] * df["Current Price"]
+        df["Gain"] = df["Current Value"] - df["Cost"]
+        df["Gain %"] = (df["Gain"] / df["Cost"]) * 100
+
+        st.dataframe(df[["Ticker", "Buy Date", "Shares", "Price", "Cost", "Current Price", "Current Value", "Gain", "Gain %"]].round(2))
+
+        col1, col2, col3 = st.columns(3)
+        total_cost = df["Cost"].sum()
+        total_value = df["Current Value"].sum()
+        gain = total_value - total_cost
+        gain_pct = (gain / total_cost) * 100 if total_cost > 0 else 0
+
+        col1.metric("💰 Invested", f"${total_cost:,.2f}")
+        col2.metric("📈 Value Now", f"${total_value:,.2f}")
+        col3.metric("📊 Gain/Loss", f"${gain:,.2f}", delta=f"{gain_pct:.2f}%")
+    except Exception as e:
+        st.warning(f"📉 Could not load current prices: {e}")
