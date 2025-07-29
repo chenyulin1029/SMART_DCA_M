@@ -102,54 +102,47 @@ if 'history' not in st.session_state:
     st.session_state.history = pd.DataFrame(columns=["Buy Date", "Ticker", "Price", "Shares", "Cost"])
 if 'rotation' not in st.session_state:
     st.session_state.rotation = {"QQQ": 0, "AAPL": 0, "NVDA": 0}
+if 'last_suggestion' not in st.session_state:
+    st.session_state.last_suggestion = None
 
-# 6. Run DCA
+# 6. Run DCA Suggestion
 if st.button("Run Smart DCA"):
     try:
         tickers = validate_tickers(ticker_str)
         init_counts = {'QQQ': count_qqq, 'AAPL': count_aapl, 'NVDA': count_nvda}
         result = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
-
-        # ✅ Save to session state
-        new_row = {
+        st.session_state.last_suggestion = {
             "Buy Date": str(buy_date),
             "Ticker": result["Buy Ticker"],
             "Price": result["Price"],
             "Shares": result["Shares"],
-            "Cost": result["Cost"]
+            "Cost": result["Cost"],
+            "Rotation": result["New Rotation"]
         }
-        st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([new_row])], ignore_index=True)
-        st.session_state.rotation = result["New Rotation"]
 
         st.success("✅ Smart DCA Suggestion:")
-        st.write(result)
+        st.write(st.session_state.last_suggestion)
 
     except Exception as e:
         st.error(f"❌ {e}")
 
-# 7. Manual Portfolio History Input
-with st.expander("➕ Manually Add Purchase to History"):
-    manual_date = st.date_input("Buy Date", value=datetime.date.today(), key="manual_date")
-    manual_ticker = st.text_input("Ticker", value="QQQ", key="manual_ticker").upper()
-    manual_price = st.number_input("Price", min_value=0.0, step=0.01, key="manual_price")
-    manual_shares = st.number_input("Shares", min_value=0.0, step=0.001, key="manual_shares")
-    manual_cost = manual_price * manual_shares
-
-    if st.button("Add to History"):
-        if manual_ticker not in valid_tickers:
-            st.error("❌ Invalid Ticker.")
-        elif manual_price <= 0 or manual_shares <= 0:
-            st.error("❌ Price and Shares must be greater than zero.")
-        else:
-            row = {
-                "Buy Date": str(manual_date),
-                "Ticker": manual_ticker,
-                "Price": manual_price,
-                "Shares": manual_shares,
-                "Cost": manual_cost
-            }
-            st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([row])], ignore_index=True)
-            st.success("✅ Added manually to history!")
+# 7. Confirm Purchase
+if st.session_state.last_suggestion:
+    if st.button("✅ Confirm and Save Purchase"):
+        row = {
+            "Buy Date": st.session_state.last_suggestion["Buy Date"],
+            "Ticker": st.session_state.last_suggestion["Ticker"],
+            "Price": st.session_state.last_suggestion["Price"],
+            "Shares": st.session_state.last_suggestion["Shares"],
+            "Cost": st.session_state.last_suggestion["Cost"]
+        }
+        st.session_state.history = pd.concat(
+            [st.session_state.history, pd.DataFrame([row])],
+            ignore_index=True
+        )
+        st.session_state.rotation = st.session_state.last_suggestion["Rotation"]
+        st.success("💾 Purchase saved to history.")
+        st.session_state.last_suggestion = None
 
 # 8. Show Buy History Table
 st.markdown("### 📜 Purchase History")
@@ -170,4 +163,3 @@ if not st.session_state.history.empty:
     df = df.sort_values("Buy Date")
     df["Cumulative Cost"] = df["Cost"].cumsum()
     st.line_chart(df.set_index("Buy Date")["Cumulative Cost"])
-
