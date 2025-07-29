@@ -111,19 +111,17 @@ if st.button("Run Smart DCA"):
         result = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
 
         # ✅ Save to session state
-        new_row = {
-            "Buy Date": str(buy_date),
-            "Ticker": result["Buy Ticker"],
-            "Price": result["Price"],
-            "Shares": result["Shares"],
-            "Cost": result["Cost"]
-        }
-        st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([new_row])], ignore_index=True)
-        st.session_state.rotation = result["New Rotation"]
+       # ✅ Just show the suggestion, don't save to history
+st.session_state.rotation = result["New Rotation"]
 
-        st.success("✅ Smart DCA Suggestion:")
-        st.write(result)
-
+st.success("✅ Smart DCA Suggestion:")
+st.write({
+    "Buy Date": str(buy_date),
+    "Ticker": result["Buy Ticker"],
+    "Price": result["Price"],
+    "Shares": result["Shares"],
+    "Cost": result["Cost"]
+})
     except Exception as e:
         st.error(f"❌ {e}")
 
