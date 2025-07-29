@@ -1,3 +1,5 @@
+# smart_dca_app.py
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -6,20 +8,7 @@ import datetime
 import os
 import json
 
-DATA_FILE = "portfolio.json"
-
-# Load from file
-def load_portfolio():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return pd.read_json(f)
-    return pd.DataFrame(columns=["Buy Date", "Ticker", "Price", "Shares", "Cost"])
-
-# Save to file
-def save_portfolio(df):
-    df.to_json(DATA_FILE, orient="records", date_format="iso")
-
-# Cache S&P 500 tickers
+# 1. Load tickers
 @st.cache_data
 def load_valid_tickers():
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -28,7 +17,7 @@ def load_valid_tickers():
 
 valid_tickers = load_valid_tickers()
 
-# Price fetching
+# 2. Utility functions
 def fetch_price(ticker, date):
     df = yf.download(ticker, start=date - datetime.timedelta(days=200),
                      end=date + datetime.timedelta(days=1),
@@ -36,10 +25,10 @@ def fetch_price(ticker, date):
     col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
     return float(df[col].loc[:pd.to_datetime(date)].iloc[-1])
 
-def fetch_latest_price(ticker):
-    df = yf.download(ticker, period="5d", interval="1d", progress=False)
-    col = 'Close'
-    return float(df[col].iloc[-1])
+def get_current_price(ticker):
+    df = yf.download(ticker, period="2d", interval="1d", progress=False, auto_adjust=False)
+    col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+    return float(df[col].iloc[-1]) if not df.empty else 0.0
 
 def validate_tickers(input_str):
     tickers = [t.strip().upper() for t in input_str.split(',') if t.strip()]
@@ -57,7 +46,7 @@ def get_last_trade_and_buy_dates():
         tentative += datetime.timedelta(days=1)
     return today, last_trade, tentative
 
-# Smart DCA logic
+# 3. Smart DCA logic
 def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
     prices = {t: fetch_price(t, cutoff_date) for t in tickers}
     raw = {}
@@ -98,11 +87,19 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         "New Rotation": rotation
     }
 
-# Load persistent portfolio
-if 'manual_history' not in st.session_state:
-    st.session_state.manual_history = load_portfolio()
+# 4. Load saved portfolio
+portfolio_file = "portfolio_data.json"
+if "portfolio" not in st.session_state:
+    if os.path.exists(portfolio_file):
+        with open(portfolio_file, "r") as f:
+            saved_data = json.load(f)
+            st.session_state.portfolio = pd.DataFrame(saved_data)
+    else:
+        st.session_state.portfolio = pd.DataFrame(columns=["Buy Date", "Ticker", "Price", "Shares", "Cost"])
+if 'rotation' not in st.session_state:
+    st.session_state.rotation = {"QQQ": 0, "AAPL": 0, "NVDA": 0}
 
-# UI Layout
+# 5. UI Layout
 st.title("📊 Smart DCA Investment Engine")
 
 ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
@@ -119,8 +116,8 @@ count_qqq = col1.number_input("QQQ", min_value=0, max_value=3, value=0)
 count_aapl = col2.number_input("AAPL", min_value=0, max_value=3, value=0)
 count_nvda = col3.number_input("NVDA", min_value=0, max_value=3, value=3)
 
-# Run DCA
-if st.button("Run Smart DCA Suggestion"):
+# 6. Run DCA (only suggestion)
+if st.button("Suggest via Smart DCA"):
     try:
         tickers = validate_tickers(ticker_str)
         init_counts = {'QQQ': count_qqq, 'AAPL': count_aapl, 'NVDA': count_nvda}
@@ -130,41 +127,67 @@ if st.button("Run Smart DCA Suggestion"):
     except Exception as e:
         st.error(f"❌ {e}")
 
-# Manual Entry
-st.markdown("### ✍️ Add Manual Purchase")
+# 7. Add manual investment entry
+st.markdown("### ➕ Manually Add Purchase")
 with st.form("manual_entry"):
-    date = st.date_input("Buy Date", value=datetime.date.today(), key="entry_date")
-    ticker = st.selectbox("Ticker", ["QQQ", "AAPL", "NVDA"], key="entry_ticker")
-    price = st.number_input("Price", min_value=0.0, step=0.01, key="entry_price")
-    shares = st.number_input("Shares", min_value=0.0, step=0.001, key="entry_shares")
+    manual_date = st.date_input("Buy Date (Manual)", value=datetime.date.today())
+    manual_ticker = st.selectbox("Ticker", sorted(valid_tickers))
+    manual_price = st.number_input("Buy Price", min_value=0.01, step=0.01)
+    manual_shares = st.number_input("Shares", min_value=0.001, step=0.001)
     submitted = st.form_submit_button("Add Purchase")
     if submitted:
-        cost = round(price * shares, 2)
-        new_row = {"Buy Date": str(date), "Ticker": ticker, "Price": price, "Shares": shares, "Cost": cost}
-        st.session_state.manual_history = pd.concat(
-            [st.session_state.manual_history, pd.DataFrame([new_row])], ignore_index=True)
-        save_portfolio(st.session_state.manual_history)
-        st.success("✅ Added to purchase history.")
+        cost = manual_price * manual_shares
+        new_row = {
+            "Buy Date": str(manual_date),
+            "Ticker": manual_ticker,
+            "Price": manual_price,
+            "Shares": manual_shares,
+            "Cost": cost
+        }
+        st.session_state.portfolio = pd.concat([st.session_state.portfolio, pd.DataFrame([new_row])], ignore_index=True)
+        st.success("Purchase added.")
+        with open(portfolio_file, "w") as f:
+            json.dump(st.session_state.portfolio.to_dict(orient="records"), f, indent=2)
 
-# Portfolio Summary
-st.markdown("### 📦 Portfolio Summary")
-if not st.session_state.manual_history.empty:
-    port = st.session_state.manual_history.groupby("Ticker")[["Shares", "Cost"]].sum()
-    port["Current Price"] = port.index.map(fetch_latest_price)
-    port["Current Value"] = port["Current Price"] * port["Shares"]
-    port["Gain/Loss"] = port["Current Value"] - port["Cost"]
-    st.dataframe(port, use_container_width=True)
+# 8. Show & Edit Portfolio
+st.markdown("### 📜 Your Investment Portfolio")
+if not st.session_state.portfolio.empty:
+    st.dataframe(st.session_state.portfolio, use_container_width=True)
+    with st.expander("🗑️ Delete a Row"):
+        index_to_delete = st.number_input("Row index to delete", min_value=0, max_value=len(st.session_state.portfolio)-1)
+        if st.button("Delete Selected Row"):
+            st.session_state.portfolio = st.session_state.portfolio.drop(index_to_delete).reset_index(drop=True)
+            st.success("Row deleted.")
+            with open(portfolio_file, "w") as f:
+                json.dump(st.session_state.portfolio.to_dict(orient="records"), f, indent=2)
 
-# Pie Chart
+# 9. Summary and Gains
+st.markdown("### 📦 Portfolio Summary with Gain/Loss")
+if not st.session_state.portfolio.empty:
+    df = st.session_state.portfolio.copy()
+    tickers = df["Ticker"].unique()
+    current_prices = {t: get_current_price(t) for t in tickers}
+    df["Current Price"] = df["Ticker"].map(current_prices)
+    df["Current Value"] = df["Current Price"] * df["Shares"]
+    summary = df.groupby("Ticker").agg(
+        Total_Shares=("Shares", "sum"),
+        Total_Cost=("Cost", "sum"),
+        Current_Price=("Current Price", "mean"),
+        Current_Value=("Current Value", "sum")
+    )
+    summary["Gain/Loss"] = summary["Current_Value"] - summary["Total_Cost"]
+    st.dataframe(summary.style.format({"Total_Cost": "${:.2f}", "Current_Price": "${:.2f}", "Current_Value": "${:.2f}", "Gain/Loss": "${:.2f}"}), use_container_width=True)
+
+# 10. Allocation Pie
 st.markdown("### 🧩 Allocation by Cost")
-if not st.session_state.manual_history.empty:
-    pie_data = st.session_state.manual_history.groupby("Ticker")["Cost"].sum()
+if not st.session_state.portfolio.empty:
+    pie_data = st.session_state.portfolio.groupby("Ticker")["Cost"].sum()
     st.pyplot(pie_data.plot.pie(autopct='%1.1f%%', figsize=(5, 5), ylabel="").get_figure())
 
-# Cumulative Chart
+# 11. Cumulative Investment Over Time
 st.markdown("### 📈 Cumulative Investment Over Time")
-if not st.session_state.manual_history.empty:
-    df = st.session_state.manual_history.copy()
+if not st.session_state.portfolio.empty:
+    df = st.session_state.portfolio.copy()
     df["Buy Date"] = pd.to_datetime(df["Buy Date"])
     df = df.sort_values("Buy Date")
     df["Cumulative Cost"] = df["Cost"].cumsum()
