@@ -5,6 +5,10 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
+import os
+
+# File path for persistent history storage
+HISTORY_CSV = "history.csv"
 
 # 1. Load tickers
 @st.cache_data
@@ -39,6 +43,22 @@ def get_last_trade_and_buy_dates():
         tentative += datetime.timedelta(days=1)
     return today, last_trade, tentative
 
+def load_history():
+    if os.path.exists(HISTORY_CSV):
+        try:
+            df = pd.read_csv(HISTORY_CSV)
+            # ensure columns exist and correct types
+            expected_cols = ["Buy Date", "Ticker", "Price", "Shares", "Cost"]
+            if all(col in df.columns for col in expected_cols):
+                return df[expected_cols]
+        except Exception as e:
+            st.warning(f"Failed to load history file: {e}")
+    # fallback empty
+    return pd.DataFrame(columns=["Buy Date", "Ticker", "Price", "Shares", "Cost"])
+
+def save_history(df):
+    df.to_csv(HISTORY_CSV, index=False)
+
 # 3. Smart DCA logic
 def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
     prices = {t: fetch_price(t, cutoff_date) for t in tickers}
@@ -63,9 +83,6 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         for t in rotation:
             rotation[t] = 0
 
-    # Note: We do NOT update rotation state permanently here
-    # Just prepare suggestion
-
     price = prices[candidate]
     shares = np.floor(invest_amt / price * 1000) / 1000
     cost = shares * price
@@ -75,7 +92,7 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         "Price": price,
         "Shares": shares,
         "Cost": cost,
-        "Suggested Rotation": rotation  # for info only, no permanent update
+        "Suggested Rotation": rotation
     }
 
 # 4. UI Layout
@@ -95,9 +112,9 @@ count_qqq = col1.number_input("QQQ", min_value=0, max_value=3, value=0)
 count_aapl = col2.number_input("AAPL", min_value=0, max_value=3, value=0)
 count_nvda = col3.number_input("NVDA", min_value=0, max_value=3, value=3)
 
-# 5. Session State Init for manual history ONLY
+# 5. Load persistent history on start
 if 'history' not in st.session_state:
-    st.session_state.history = pd.DataFrame(columns=["Buy Date", "Ticker", "Price", "Shares", "Cost"])
+    st.session_state.history = load_history()
 
 # 6. Run DCA Suggestion ONLY (no save)
 if st.button("Run Smart DCA Suggestion"):
@@ -106,7 +123,6 @@ if st.button("Run Smart DCA Suggestion"):
         init_counts = {'QQQ': count_qqq, 'AAPL': count_aapl, 'NVDA': count_nvda}
         result = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
 
-        # Just show suggestion, do NOT save it
         st.success("✅ Smart DCA Suggestion:")
         st.write(result)
 
@@ -137,12 +153,52 @@ with st.form("manual_entry"):
                 "Cost": m_qty * m_price
             }
             st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([row])], ignore_index=True)
+            save_history(st.session_state.history)
             st.success("✅ Entry added!")
 
-# 8. Show Buy History Table
+# 8. Show Buy History Table with delete and edit support
 st.markdown("### 📜 Purchase History")
-if not st.session_state.history.empty:
-    st.dataframe(st.session_state.history, use_container_width=True)
+
+def edit_history():
+    df = st.session_state.history.copy()
+    edited = False
+
+    for i, row in df.iterrows():
+        with st.expander(f"Edit Record {i+1}: {row['Ticker']} on {row['Buy Date']}"):
+            col1, col2, col3, col4, col5 = st.columns(5)
+            new_date = col1.date_input("Buy Date", pd.to_datetime(row['Buy Date']))
+            new_ticker = col2.text_input("Ticker", row['Ticker']).upper()
+            new_price = col3.number_input("Price", value=float(row['Price']), min_value=0.0, step=0.01, format="%.2f")
+            new_shares = col4.number_input("Shares", value=float(row['Shares']), min_value=0.0, step=0.001, format="%.3f")
+            new_cost = col5.number_input("Cost", value=float(row['Cost']), min_value=0.0, step=0.01, format="%.2f", disabled=True)
+
+            # Recalculate cost if price or shares changed
+            if new_price != row['Price'] or new_shares != row['Shares']:
+                new_cost = new_price * new_shares
+
+            if st.button(f"Save Changes #{i+1}"):
+                if new_ticker not in valid_tickers:
+                    st.warning(f"Ticker `{new_ticker}` is not valid or not in S&P 500 list.")
+                else:
+                    df.at[i, 'Buy Date'] = str(new_date)
+                    df.at[i, 'Ticker'] = new_ticker
+                    df.at[i, 'Price'] = new_price
+                    df.at[i, 'Shares'] = new_shares
+                    df.at[i, 'Cost'] = new_cost
+                    st.session_state.history = df
+                    save_history(df)
+                    st.experimental_rerun()  # refresh to show updates
+
+            if st.button(f"Delete Record #{i+1}"):
+                df = df.drop(i).reset_index(drop=True)
+                st.session_state.history = df
+                save_history(df)
+                st.experimental_rerun()
+
+    if df.empty:
+        st.info("No purchase history yet.")
+
+edit_history()
 
 # 9. Chart: Pie of Allocation by Cost
 st.markdown("### 🧩 Allocation by Cost")
@@ -163,17 +219,25 @@ if not st.session_state.history.empty:
 st.markdown("### 📊 Portfolio Summary")
 if not st.session_state.history.empty:
     try:
-        latest_prices = yf.download(
-            tickers=st.session_state.history["Ticker"].unique().tolist(),
-            period="1d", progress=False
-        )["Adj Close"]
+        tickers = st.session_state.history["Ticker"].unique().tolist()
+        # yf.download can return MultiIndex columns, handle that:
+        price_df = yf.download(tickers=tickers, period="1d", progress=False)
+        if 'Adj Close' in price_df.columns:
+            latest_prices = price_df['Adj Close'].iloc[-1].to_dict()
+        elif isinstance(price_df.columns, pd.MultiIndex):
+            # Some tickers, pick 'Adj Close' level
+            latest_prices = {}
+            for t in tickers:
+                try:
+                    latest_prices[t] = price_df['Adj Close'][t].iloc[-1]
+                except Exception:
+                    latest_prices[t] = np.nan
+        else:
+            # fallback to Close
+            latest_prices = price_df.iloc[-1].to_dict()
 
-        if isinstance(latest_prices, pd.Series):
-            latest_prices = latest_prices.to_frame(name="Adj Close")
-
-        ticker_latest = latest_prices.iloc[-1].to_dict()
         df = st.session_state.history.copy()
-        df["Current Price"] = df["Ticker"].map(ticker_latest)
+        df["Current Price"] = df["Ticker"].map(latest_prices)
         df["Current Value"] = df["Shares"] * df["Current Price"]
         df["Gain"] = df["Current Value"] - df["Cost"]
         df["Gain %"] = (df["Gain"] / df["Cost"]) * 100
