@@ -248,21 +248,28 @@ if not st.session_state.portfolio.empty:
    # ⬇️ Add this block at the place you download compare_with prices
 try:
     price_data_raw = yf.download(compare_with, start=start, end=end, progress=False)
-
-    # Handle both MultiIndex (usually from multiple tickers) and single-column cases
+    
     if isinstance(price_data_raw.columns, pd.MultiIndex):
         if 'Adj Close' in price_data_raw.columns.get_level_values(0):
             price_data = price_data_raw['Adj Close']
+        elif 'Close' in price_data_raw.columns.get_level_values(0):
+            price_data = price_data_raw['Close']
         else:
-            st.error("Downloaded data does not contain 'Adj Close'. Check ticker symbols or data availability.")
+            st.error("Downloaded data missing both 'Adj Close' and 'Close' columns.")
             st.stop()
     else:
-        price_data = price_data_raw  # Already single-level, assume it's Adj Close by default
+        # Single-level columns: check which column exists
+        if 'Adj Close' in price_data_raw.columns:
+            price_data = price_data_raw['Adj Close']
+        elif 'Close' in price_data_raw.columns:
+            price_data = price_data_raw['Close']
+        else:
+            st.error("Downloaded data missing both 'Adj Close' and 'Close' columns.")
+            st.stop()
 
 except Exception as e:
     st.error(f"Failed to download price data: {e}")
     st.stop()
-
 
     price_data = price_data.ffill().dropna()
 
