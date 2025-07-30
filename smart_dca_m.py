@@ -119,19 +119,42 @@ def save_portfolio(df):
 # 4. UI Layout
 st.title("📊 Smart DCA Investment Engine")
 
+# Free‑form ticker entry (keep this for fallback)
 ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
+
+# A→Z multiselect override
+st.markdown("#### Or pick tickers from the universe")
+ticker_list = st.multiselect(
+    "Select Tickers", 
+    options=sorted(valid_tickers), 
+    default=["QQQ", "AAPL", "NVDA"],
+    help="Choose any tickers; defaults to QQQ, AAPL, NVDA"
+)
+# If user used multiselect, override free‑form
+if ticker_list:
+    tickers_to_use = ticker_list
+else:
+    tickers_to_use = [t.strip().upper() for t in ticker_str.split(",") if t.strip()]
+
+# Investment amount controls (unchanged)
 preset = st.radio("Choose Investment Preset", ['$450 (Default)', '$600 (Future)'])
 custom_amt = st.number_input("Or enter custom amount", min_value=0.0, max_value=5000.0, step=10.0, value=0.0)
 amount = 450 if (custom_amt == 0 and preset == '$450 (Default)') else (600 if custom_amt == 0 else custom_amt)
 
 cutoff_date = st.date_input("Cutoff Date", value=get_last_trade_and_buy_dates()[1])
-buy_date = st.date_input("Buy Date", value=get_last_trade_and_buy_dates()[2])
+buy_date    = st.date_input("Buy Date",   value=get_last_trade_and_buy_dates()[2])
 
+# Dynamic Rotation Counts per selected ticker
 st.markdown("### Rotation Counts")
-col1, col2, col3 = st.columns(3)
-count_qqq = col1.number_input("QQQ", min_value=0, max_value=3, value=0)
-count_aapl = col2.number_input("AAPL", min_value=0, max_value=3, value=0)
-count_nvda = col3.number_input("NVDA", min_value=0, max_value=3, value=3)
+rotation_cols = st.columns(len(tickers_to_use))
+init_counts = {}
+for idx, t in enumerate(tickers_to_use):
+    # use stored session_state.rotation as default
+    default_ct = st.session_state.rotation.get(t, 0)
+    init_counts[t] = rotation_cols[idx].number_input(
+        f"{t} Count", min_value=0, max_value=3, value=default_ct
+    )
+
 
 # 5. Session State Init & Load Portfolio
 if "portfolio" not in st.session_state:
@@ -142,9 +165,9 @@ if "rotation" not in st.session_state:
 # 6. Run DCA (only suggestion)
 if st.button("Suggest via Smart DCA"):
     try:
-        tickers     = validate_tickers(ticker_str)
-        init_counts = {'QQQ': count_qqq, 'AAPL': count_aapl, 'NVDA': count_nvda}
-        result      = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
+        # Use our dynamic list & counts
+tickers = validate_tickers(",".join(tickers_to_use))
+result  = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
 
         st.success("✅ Smart DCA Suggestion:")
         st.write(result)
