@@ -220,31 +220,49 @@ if not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to display allocation.")
 
-# 11. Cumulative Investment Over Time + Portfolio Metrics
-st.markdown("### 📈 Cumulative Investment Over Time")
+# 11. Cumulative Investment Over Time + Overlay Current Value Line
+st.markdown("### 📈 Cumulative Investment & Current Value Over Time")
 
 if not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
     df["Buy Date"] = pd.to_datetime(df["Buy Date"])
     df = df.sort_values("Buy Date")
-    df["Cumulative Cost"] = df["Cost"].cumsum()
-    st.line_chart(df.set_index("Buy Date")["Cumulative Cost"])
 
-    # --- new metrics below the chart ---
-    # calculate current value and gain/loss
+    # Cumulative invested cost
+    df["Cumulative Cost"] = df["Cost"].cumsum()
+
+    # Compute current prices once
     tickers = df["Ticker"].unique().tolist()
     current_prices = {t: get_current_price(t) for t in tickers}
-    df["Current Price"] = df["Ticker"].map(current_prices)
-    df["Current Value"] = df["Shares"] * df["Current Price"]
 
-    total_cost = df["Cost"].sum()
-    total_value = df["Current Value"].sum()
-    gain = total_value - total_cost
-    gain_pct = (gain / total_cost) * 100 if total_cost > 0 else 0
+    # For each buy date, compute cumulative current value of all shares purchased up to that date
+    cum_values = []
+    total_units = {}
+    for idx, row in df.iterrows():
+        # accumulate units by ticker
+        total_units.setdefault(row["Ticker"], 0.0)
+        total_units[row["Ticker"]] += row["Shares"]
+
+        # compute current value at this timestamp
+        cv = sum(units * current_prices[t] for t, units in total_units.items())
+        cum_values.append(cv)
+
+    df["Cumulative Value"] = cum_values
+
+    # Plot both series
+    chart_df = df.set_index("Buy Date")[["Cumulative Cost", "Cumulative Value"]]
+    st.line_chart(chart_df)
+
+    # --- metrics below the chart ---
+    total_cost  = df["Cost"].sum()
+    total_value = cum_values[-1] if cum_values else 0.0
+    gain        = total_value - total_cost
+    gain_pct    = (gain / total_cost * 100) if total_cost else 0
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("💰 Invested", f"${total_cost:,.2f}")
-    col2.metric("📈 Value Now", f"${total_value:,.2f}")
-    col3.metric("📊 Gain/Loss", f"${gain:,.2f}", delta=f"{gain_pct:.2f}%")
+    col1.metric("💰 Invested",     f"${total_cost:,.2f}")
+    col2.metric("📈 Value Now",    f"${total_value:,.2f}")
+    col3.metric("📊 Gain/Loss",    f"${gain:,.2f}", delta=f"{gain_pct:.2f}%")
+
 else:
     st.info("No portfolio data to display cumulative investment.")
