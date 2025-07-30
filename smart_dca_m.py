@@ -231,97 +231,95 @@ if not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to display cumulative investment.")
 
-st.markdown("### 📈 Buy Price vs. Current Price for Each Purchase")
+# 12. Portfolio Value vs. Market Tickers – Growth Comparison + Individual Buy Gains
+st.markdown("## 📈 Portfolio Growth vs. Market Tickers")
 
-if not st.session_state.portfolio.empty:
-    df = st.session_state.portfolio.copy()
-    df["Buy Date"] = pd.to_datetime(df["Buy Date"])
-    df = df.sort_values("Buy Date")
-
-    tickers = df["Ticker"].unique().tolist()
-
-    end = datetime.date.today()
-    start = df["Buy Date"].min() - pd.Timedelta(days=5)
-
+if not portfolio["buy_log"]:
+    st.info("No purchase data available to plot performance.")
+else:
     try:
-        price_data_raw = yf.download(tickers, start=start, end=end, progress=False)
+        df = pd.DataFrame(portfolio["buy_log"])
 
-        # Extract closing price
-        if isinstance(price_data_raw.columns, pd.MultiIndex):
-            if 'Adj Close' in price_data_raw.columns.get_level_values(0):
-                price_data = price_data_raw['Adj Close']
-            elif 'Close' in price_data_raw.columns.get_level_values(0):
-                price_data = price_data_raw['Close']
-            else:
-                st.warning("Price data missing 'Adj Close' or 'Close'.")
-                st.stop()
+        # Auto-detect buy price column
+        if "Buy Price" in df.columns:
+            pass
+        elif "Price" in df.columns:
+            df = df.rename(columns={"Price": "Buy Price"})
         else:
-            if 'Adj Close' in price_data_raw.columns:
-                price_data = price_data_raw['Adj Close']
-            elif 'Close' in price_data_raw.columns:
-                price_data = price_data_raw['Close']
-            else:
-                st.warning("Price data missing 'Adj Close' or 'Close'.")
-                st.stop()
-
-        price_data = price_data.ffill().dropna()
-
-        chart_data = []
-
-        for _, row in df.iterrows():
-            ticker = row["Ticker"]
-            buy_date = row["Buy Date"]
-            buy_price = row["Buy Price"]
-
-            # Try to get the latest price from data
-            if ticker not in price_data.columns:
-                continue
-            try:
-                current_price = price_data[ticker].iloc[-1]
-            except:
-                continue
-
-            chart_data.append({
-                "Ticker": ticker,
-                "Buy Date": buy_date,
-                "Buy Price": buy_price,
-                "Current Price": current_price
-            })
-
-        if not chart_data:
-            st.info("No data available to display the chart.")
+            st.error("Buy log is missing a 'Buy Price' or 'Price' column.")
             st.stop()
 
-        chart_df = pd.DataFrame(chart_data)
+        df["Buy Price"] = df["Buy Price"].astype(float)
+        df["Date"] = pd.to_datetime(df["Date"])
+        df["Shares"] = df["Shares"].astype(float)
 
-        # Create a long-form dataframe for line plotting
-        plot_data = pd.DataFrame()
-        for _, row in chart_df.iterrows():
-            plot_data = pd.concat([
-                plot_data,
-                pd.DataFrame({
-                    "Date": [row["Buy Date"], end],
-                    "Price": [row["Buy Price"], row["Current Price"]],
-                    "Ticker": [row["Ticker"], row["Ticker"]]
-                })
-            ])
+        # Define tickers and date range
+        unique_tickers = df["Ticker"].unique().tolist()
+        start_date = df["Date"].min() - pd.Timedelta(days=5)
+        end_date = pd.to_datetime("today")
 
-        import altair as alt
+        # Download historical data
+        market_prices = yf.download(unique_tickers, start=start_date, end=end_date)["Adj Close"]
 
-        chart = alt.Chart(plot_data).mark_line(point=True).encode(
-            x=alt.X("Date:T", title="Date"),
-            y=alt.Y("Price:Q", title="Price ($)"),
-            color="Ticker:N",
-            tooltip=["Ticker", "Date", "Price"]
-        ).properties(
-            width=750,
-            height=400,
-            title="Performance of Each Buy Compared to Current Price"
-        )
+        if market_prices.empty:
+            st.warning("No market price data could be downloaded.")
+        else:
+            # Get current prices for each ticker
+            current_prices = market_prices.ffill().iloc[-1]
 
-        st.altair_chart(chart)
+            # Build scatter plot: Each point is a buy
+            plot_data = df.copy()
+            plot_data["Current Price"] = plot_data["Ticker"].map(current_prices)
+            plot_data["Growth %"] = ((plot_data["Current Price"] - plot_data["Buy Price"]) / plot_data["Buy Price"]) * 100
+            plot_data["Gain/Loss"] = plot_data["Current Price"] - plot_data["Buy Price"]
+
+            # Generate hover labels
+            plot_data["Label"] = (
+                plot_data["Ticker"]
+                + "<br>Date: " + plot_data["Date"].dt.strftime("%Y-%m-%d")
+                + "<br>Buy @ $" + plot_data["Buy Price"].round(2).astype(str)
+                + "<br>Now: $" + plot_data["Current Price"].round(2).astype(str)
+                + "<br>Change: " + plot_data["Growth %"].round(2).astype(str) + "%"
+            )
+
+            # Scatter plot
+            fig = go.Figure()
+
+            for ticker in unique_tickers:
+                subset = plot_data[plot_data["Ticker"] == ticker]
+                fig.add_trace(go.Scatter(
+                    x=subset["Date"],
+                    y=subset["Buy Price"],
+                    mode='markers+text',
+                    marker=dict(size=12, color='royalblue'),
+                    name=ticker,
+                    text=subset["Growth %"].round(1).astype(str) + '%',
+                    hovertext=subset["Label"],
+                    hoverinfo="text"
+                ))
+
+            # Add current price trend lines
+            for ticker in unique_tickers:
+                current_price = current_prices[ticker]
+                fig.add_trace(go.Scatter(
+                    x=[plot_data["Date"].min(), plot_data["Date"].max()],
+                    y=[current_price, current_price],
+                    mode='lines',
+                    line=dict(dash='dot', color='gray'),
+                    name=f"{ticker} Now ${current_price:.2f}",
+                    hoverinfo='skip',
+                    showlegend=True
+                ))
+
+            fig.update_layout(
+                title="Each Buy Entry vs. Current Price",
+                xaxis_title="Purchase Date",
+                yaxis_title="Buy Price & Current Price",
+                height=550,
+                template="plotly_white"
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Failed to load data: {e}")
-else:
-    st.info("No portfolio data to visualize. Please add some purchases.")
+        st.error(f"Error displaying portfolio vs. market tickers: {e}")
