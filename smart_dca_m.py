@@ -246,10 +246,16 @@ if not st.session_state.portfolio.empty:
     compare_with = st.multiselect("Compare With Market Tickers:", available_tickers, default=default_compare)
 
     price_data_raw = yf.download(compare_with, start=start, end=end, progress=False)
-    if isinstance(price_data_raw.columns, pd.MultiIndex):
+
+if isinstance(price_data_raw.columns, pd.MultiIndex):
+    if "Adj Close" in price_data_raw.columns.get_level_values(0):
         price_data = price_data_raw["Adj Close"]
     else:
-        price_data = price_data_raw
+        st.error("Downloaded data does not contain 'Adj Close'.")
+        st.stop()
+else:
+    price_data = price_data_raw  # Already single-level, assume it's 'Adj Close'
+
 
     price_data = price_data.ffill().dropna()
 
