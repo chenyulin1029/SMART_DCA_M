@@ -119,6 +119,10 @@ def save_portfolio(df):
 # 4. UI Layout
 st.title("📊 Smart DCA Investment Engine")
 
+# Ensure rotation dict exists before we reference it
+if "rotation" not in st.session_state:
+    st.session_state.rotation = {}
+
 # Free‑form ticker entry (fallback)
 ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
 
@@ -141,7 +145,7 @@ else:
 preset     = st.radio("Choose Investment Preset", ['$450 (Default)', '$600 (Future)'])
 custom_amt = st.number_input("Or enter custom amount", min_value=0.0, max_value=5000.0,
                              step=10.0, value=0.0)
-amount = 450 if (custom_amt == 0 and preset == '$450 (Default)') else (600 if custom_amt == 0 else custom_amt)
+amount     = 450 if (custom_amt == 0 and preset == '$450 (Default)') else (600 if custom_amt == 0 else custom_amt)
 
 cutoff_date = st.date_input("Cutoff Date", value=get_last_trade_and_buy_dates()[1])
 buy_date    = st.date_input("Buy Date",   value=get_last_trade_and_buy_dates()[2])
@@ -155,6 +159,7 @@ for idx, t in enumerate(tickers_to_use):
     init_counts[t] = rotation_cols[idx].number_input(
         f"{t} Count", min_value=0, max_value=3, value=default_ct
     )
+
 
 
 # 5. Session State Init & Load Portfolio
