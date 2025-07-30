@@ -175,7 +175,57 @@ if st.button("Suggest via Smart DCA"):
         st.success("✅ Smart DCA Suggestion:")
         st.write(result)
 
-        # … your existing momentum breakdown/chart code …
+        # ─────────────────────────────────────────────────────────────────────────
+        # ➕ NEW: Show detailed momentum breakdown and chart
+        # ─────────────────────────────────────────────────────────────────────────
+        # Compute momentum components again for display
+        mom_rows = []
+        for t in tickers:
+            p0 = fetch_price(t, cutoff_date)
+            p1 = fetch_price(t, cutoff_date - datetime.timedelta(days=30))
+            p3 = fetch_price(t, cutoff_date - datetime.timedelta(days=90))
+            p6 = fetch_price(t, cutoff_date - datetime.timedelta(days=180))
+            r1 = p0/p1 - 1
+            r3 = p0/p3 - 1
+            r6 = p0/p6 - 1
+            raw = 0.2*r1 + 0.3*r3 + 0.5*r6
+            mom_rows.append({
+                "Ticker": t,
+                "1‑Month %": f"{r1:.2%}",
+                "3‑Month %": f"{r3:.2%}",
+                "6‑Month %": f"{r6:.2%}",
+                "Raw Score %": f"{raw:.2%}"
+            })
+
+        mom_df = pd.DataFrame(mom_rows).set_index("Ticker")
+        st.markdown("#### 🔎 Momentum Breakdown")
+        st.dataframe(mom_df, use_container_width=True)
+
+        # Bar chart of raw scores
+        import altair as alt
+        chart_df = (
+            pd.DataFrame([{
+                "Ticker": row["Ticker"],
+                "Raw Score": float(row["Raw Score %"].strip('%')) 
+            } for row in mom_rows])
+        )
+        bar = (
+            alt.Chart(chart_df)
+               .mark_bar()
+               .encode(
+                   x=alt.X("Ticker:N", title="Ticker"),
+                   y=alt.Y("Raw Score:Q", title="Raw Momentum (%)"),
+                   color=alt.Color("Raw Score:Q", scale=alt.Scale(scheme="blues")),
+                   tooltip=[
+                       alt.Tooltip("Ticker:N"),
+                       alt.Tooltip("Raw Score:Q", format=".2f")
+                   ]
+               )
+               .properties(width=600, height=300)
+        )
+        st.altair_chart(bar, use_container_width=True)
+        # ─────────────────────────────────────────────────────────────────────────
+
     except Exception as e:
         st.error(f"❌ {e}")
 
