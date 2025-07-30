@@ -231,63 +231,97 @@ if not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to display cumulative investment.")
 
-# 12. Fixed Portfolio vs Market Chart
-st.markdown("### 📉 Portfolio Value vs. Market Tickers")
+st.markdown("### 📈 Buy Price vs. Current Price for Each Purchase")
+
 if not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
     df["Buy Date"] = pd.to_datetime(df["Buy Date"])
     df = df.sort_values("Buy Date")
 
-    start = df["Buy Date"].min() - pd.Timedelta(days=5)
+    tickers = df["Ticker"].unique().tolist()
+
     end = datetime.date.today()
+    start = df["Buy Date"].min() - pd.Timedelta(days=5)
 
-    default_compare = ["QQQ", "AAPL", "NVDA"]
-    available_tickers = list(set(default_compare + df["Ticker"].unique().tolist()))
-    compare_with = st.multiselect("Compare With Market Tickers:", available_tickers, default=default_compare)
+    try:
+        price_data_raw = yf.download(tickers, start=start, end=end, progress=False)
 
-   # ⬇️ Add this block at the place you download compare_with prices
-try:
-    price_data_raw = yf.download(compare_with, start=start, end=end, progress=False)
-    
-    if isinstance(price_data_raw.columns, pd.MultiIndex):
-        if 'Adj Close' in price_data_raw.columns.get_level_values(0):
-            price_data = price_data_raw['Adj Close']
-        elif 'Close' in price_data_raw.columns.get_level_values(0):
-            price_data = price_data_raw['Close']
+        # Extract closing price
+        if isinstance(price_data_raw.columns, pd.MultiIndex):
+            if 'Adj Close' in price_data_raw.columns.get_level_values(0):
+                price_data = price_data_raw['Adj Close']
+            elif 'Close' in price_data_raw.columns.get_level_values(0):
+                price_data = price_data_raw['Close']
+            else:
+                st.warning("Price data missing 'Adj Close' or 'Close'.")
+                st.stop()
         else:
-            st.error("Downloaded data missing both 'Adj Close' and 'Close' columns.")
+            if 'Adj Close' in price_data_raw.columns:
+                price_data = price_data_raw['Adj Close']
+            elif 'Close' in price_data_raw.columns:
+                price_data = price_data_raw['Close']
+            else:
+                st.warning("Price data missing 'Adj Close' or 'Close'.")
+                st.stop()
+
+        price_data = price_data.ffill().dropna()
+
+        chart_data = []
+
+        for _, row in df.iterrows():
+            ticker = row["Ticker"]
+            buy_date = row["Buy Date"]
+            buy_price = row["Buy Price"]
+
+            # Try to get the latest price from data
+            if ticker not in price_data.columns:
+                continue
+            try:
+                current_price = price_data[ticker].iloc[-1]
+            except:
+                continue
+
+            chart_data.append({
+                "Ticker": ticker,
+                "Buy Date": buy_date,
+                "Buy Price": buy_price,
+                "Current Price": current_price
+            })
+
+        if not chart_data:
+            st.info("No data available to display the chart.")
             st.stop()
-    else:
-        # Single-level columns: check which column exists
-        if 'Adj Close' in price_data_raw.columns:
-            price_data = price_data_raw['Adj Close']
-        elif 'Close' in price_data_raw.columns:
-            price_data = price_data_raw['Close']
-        else:
-            st.error("Downloaded data missing both 'Adj Close' and 'Close' columns.")
-            st.stop()
 
-except Exception as e:
-    st.error(f"Failed to download price data: {e}")
-    st.stop()
+        chart_df = pd.DataFrame(chart_data)
 
-    price_data = price_data.ffill().dropna()
+        # Create a long-form dataframe for line plotting
+        plot_data = pd.DataFrame()
+        for _, row in chart_df.iterrows():
+            plot_data = pd.concat([
+                plot_data,
+                pd.DataFrame({
+                    "Date": [row["Buy Date"], end],
+                    "Price": [row["Buy Price"], row["Current Price"]],
+                    "Ticker": [row["Ticker"], row["Ticker"]]
+                })
+            ])
 
-    daily_value = pd.Series(0.0, index=price_data.index)
-    for _, row in df.iterrows():
-        t = row["Ticker"]
-        shares = row["Shares"]
-        buy_date = row["Buy Date"]
-        if t in price_data.columns:
-            subset = price_data.loc[price_data.index >= buy_date, t]
-            daily_value.loc[subset.index] += subset * shares
+        import altair as alt
 
-    combined = pd.concat(
-        [daily_value.rename("Portfolio")] +
-        [price_data[t].rename(t) for t in compare_with if t in price_data.columns],
-        axis=1
-    ).dropna()
-    
-    st.line_chart(combined)
+        chart = alt.Chart(plot_data).mark_line(point=True).encode(
+            x=alt.X("Date:T", title="Date"),
+            y=alt.Y("Price:Q", title="Price ($)"),
+            color="Ticker:N",
+            tooltip=["Ticker", "Date", "Price"]
+        ).properties(
+            width=750,
+            height=400,
+            title="Performance of Each Buy Compared to Current Price"
+        )
+
+        st.altair_chart(chart)
+
+    except Exception as e:
+        st.error(f"Failed to load data: {e}")
 else:
-    st.info("No data to chart against market.")
+    st.info("No portfolio data to visualize. Please add some purchases.")
