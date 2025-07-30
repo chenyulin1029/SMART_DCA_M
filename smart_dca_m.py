@@ -1,3 +1,5 @@
+# Re-run due to code execution state reset. Re-create the smart_dca_m.py file with all integrated features.
+smart_dca_code = """
 import streamlit as st
 import pandas as pd
 import yfinance as yf
@@ -167,3 +169,11 @@ plot_portfolio_vs_tickers(portfolio)
 # ----- Debug View -----
 if st.checkbox("Show raw portfolio data"):
     st.dataframe(pd.DataFrame(portfolio))
+"""
+
+# Save to .py file
+path = "/mnt/data/smart_dca_m.py"
+with open(path, "w") as f:
+    f.write(smart_dca_code.strip())
+
+path
