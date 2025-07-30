@@ -269,7 +269,7 @@ with st.form("manual_entry"):
 st.markdown("### 📜 Your Investment Portfolio")
 
 if not st.session_state.portfolio.empty:
-    # Dynamic key forces re‑creation whenever the number of rows changes
+    # Build a key that changes whenever the number of rows changes
     editor_key = f"portfolio_editor_{len(st.session_state.portfolio)}"
     edited_df = st.data_editor(
         st.session_state.portfolio,
@@ -278,16 +278,16 @@ if not st.session_state.portfolio.empty:
         key=editor_key
     )
 
+    # If the user edited any cells, save and re‑render on next run automatically
     if not edited_df.equals(st.session_state.portfolio):
         st.session_state.portfolio = edited_df.reset_index(drop=True)
         save_portfolio(st.session_state.portfolio)
         st.success("Portfolio updated and saved.")
-        st.experimental_rerun()
 
     with st.expander("🗑️ Delete a Row"):
-        # Build a list of labels for each row
+        # Show selectbox of row indices + simple label
         options = [
-            (i, f"{i} │ {row.Ticker} on {row['Buy Date']} ({row.Shares} shares)")
+            (i, f"{i}: {row.Ticker} on {row['Buy Date']} — {row.Shares} shares")
             for i, row in st.session_state.portfolio.iterrows()
         ]
         idx_list, labels = zip(*options)
@@ -296,8 +296,9 @@ if not st.session_state.portfolio.empty:
             options=idx_list,
             format_func=lambda i: labels[idx_list.index(i)]
         )
+
         if st.button("Delete Selected Row", key="delete_row"):
-            # Drop and save
+            # Remove that row and save
             st.session_state.portfolio = (
                 st.session_state.portfolio
                   .drop(to_delete)
@@ -305,8 +306,8 @@ if not st.session_state.portfolio.empty:
             )
             save_portfolio(st.session_state.portfolio)
             st.success(f"Row {to_delete} deleted and portfolio saved.")
-            # Force rerun so data_editor & charts reload
-            st.experimental_rerun()
+            # No explicit rerun needed—because editor_key has changed,
+            # Streamlit will rebuild data_editor (and all below) automatically.
 
 else:
     st.info("No portfolio data available. Please add purchases.")
