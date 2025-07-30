@@ -231,75 +231,59 @@ if not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to display cumulative investment.")
 
-# 12. Portfolio Value vs. Market Tickers – Individual Buys vs. Current Price
-import plotly.graph_objects as go
+# 12. Portfolio Value vs. Market Tickers (matplotlib version)
+import matplotlib.pyplot as plt
 
 st.markdown("## 📈 Portfolio Growth vs. Market Tickers")
 
-# Grab your purchase DataFrame directly
+# Copy current portfolio DataFrame
 df = st.session_state.portfolio.copy()
 
 if df.empty:
     st.info("No purchase data available to plot performance.")
 else:
-    # Ensure proper types
+    # Ensure correct types
     df["Buy Date"] = pd.to_datetime(df["Buy Date"])
     df["Price"]    = df["Price"].astype(float)
     df["Shares"]   = df["Shares"].astype(float)
-    # Calculate current prices
+
+    # Fetch current prices
     tickers = df["Ticker"].unique().tolist()
     current_prices = {t: get_current_price(t) for t in tickers}
 
-    # Build a DataFrame for plotting
-    plot_rows = []
-    today = pd.to_datetime("today")
+    # Prepare the plot
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    # Keep track of which ticker we've already labeled
+    labeled = set()
+    today = pd.to_datetime("today").normalize()
+
     for _, row in df.iterrows():
-        ticker     = row["Ticker"]
-        buy_date   = row["Buy Date"]
-        buy_price  = row["Price"]
-        curr_price = current_prices.get(ticker, None)
-        if curr_price is None:
+        t = row["Ticker"]
+        buy_date  = row["Buy Date"]
+        buy_price = row["Price"]
+        curr_price = current_prices.get(t, None)
+
+        # Skip if no current price
+        if curr_price is None or curr_price == 0:
             continue
-        gain_pct   = (curr_price - buy_price) / buy_price * 100
-        label = (
-            f"{ticker}<br>"
-            f"Buy: {buy_date.date()} @ ${buy_price:.2f}<br>"
-            f"Now: ${curr_price:.2f}<br>"
-            f"Change: {gain_pct:+.2f}%"
+
+        # Plot line segment from buy to today
+        ax.plot(
+            [buy_date, today],
+            [buy_price, curr_price],
+            marker="o",
+            linestyle="-",
+            label=t if t not in labeled else "",
         )
-        plot_rows.append({
-            "Ticker": ticker,
-            "Date": buy_date,
-            "Buy Price": buy_price,
-            "Current Price": curr_price,
-            "Gain %": gain_pct,
-            "Label": label
-        })
+        labeled.add(t)
 
-    plot_df = pd.DataFrame(plot_rows)
-    if plot_df.empty:
-        st.warning("No valid price data to plot.")
-    else:
-        # Create the figure
-        fig = go.Figure()
+    # Formatting
+    ax.set_title("Each Purchase → Current Price")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Price (USD)")
+    ax.legend(title="Ticker")
+    ax.grid(True)
 
-        # Plot each buy as a line+marker from buy_price -> current_price
-        for ticker in plot_df["Ticker"].unique():
-            sub = plot_df[plot_df["Ticker"] == ticker]
-            fig.add_trace(go.Scatter(
-                x=[*sub["Date"], today],
-                y=[*sub["Buy Price"], current_prices[ticker]],
-                mode="lines+markers",
-                name=ticker,
-                text=[*sub["Label"], f"{ticker} Current: ${current_prices[ticker]:.2f}"],
-                hoverinfo="text"
-            ))
-
-        fig.update_layout(
-            title="Each Purchase: Buy Price → Current Price",
-            xaxis_title="Date",
-            yaxis_title="Price (USD)",
-            height=500,
-            legend_title="Ticker"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    # Render in Streamlit
+    st.pyplot(fig)
