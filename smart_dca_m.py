@@ -278,15 +278,13 @@ if not st.session_state.portfolio.empty:
         st.session_state.portfolio = edited_df.reset_index(drop=True)
         save_portfolio(st.session_state.portfolio)
         st.success("Portfolio updated and saved.")
+        st.experimental_rerun()
 
-    # —— improved delete block —— 
     with st.expander("🗑️ Delete a Row"):
-        # build a list of (index, summary) for selection:
         options = [
             (i, f"{i} | {row.Ticker} @ {row['Buy Date']}, shares={row.Shares}")
             for i, row in st.session_state.portfolio.iterrows()
         ]
-        # unpack indices and labels
         idx_list, labels = zip(*options)
         to_delete = st.selectbox(
             "Select row to delete",
@@ -301,8 +299,12 @@ if not st.session_state.portfolio.empty:
             )
             save_portfolio(st.session_state.portfolio)
             st.success(f"Row {to_delete} deleted and portfolio saved.")
+            # Force a full rerun so charts below reflect the deletion immediately
+            st.experimental_rerun()
+
 else:
     st.info("No portfolio data available. Please add purchases.")
+
 
 
 # 9. Summary
