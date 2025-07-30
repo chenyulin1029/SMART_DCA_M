@@ -268,19 +268,42 @@ with st.form("manual_entry"):
 # 8. Show Portfolio
 st.markdown("### 📜 Your Investment Portfolio")
 if not st.session_state.portfolio.empty:
-    edited_df = st.data_editor(st.session_state.portfolio, num_rows="dynamic", use_container_width=True)
+    # allow in‑place edits via data_editor
+    edited_df = st.data_editor(
+        st.session_state.portfolio,
+        num_rows="dynamic",
+        use_container_width=True
+    )
     if not edited_df.equals(st.session_state.portfolio):
         st.session_state.portfolio = edited_df.reset_index(drop=True)
         save_portfolio(st.session_state.portfolio)
         st.success("Portfolio updated and saved.")
+
+    # —— improved delete block —— 
     with st.expander("🗑️ Delete a Row"):
-        index_to_delete = st.number_input("Row index to delete", min_value=0, max_value=len(st.session_state.portfolio)-1, step=1)
-        if st.button("Delete Selected Row"):
-            st.session_state.portfolio = st.session_state.portfolio.drop(index_to_delete).reset_index(drop=True)
+        # build a list of (index, summary) for selection:
+        options = [
+            (i, f"{i} | {row.Ticker} @ {row['Buy Date']}, shares={row.Shares}")
+            for i, row in st.session_state.portfolio.iterrows()
+        ]
+        # unpack indices and labels
+        idx_list, labels = zip(*options)
+        to_delete = st.selectbox(
+            "Select row to delete",
+            options=idx_list,
+            format_func=lambda i, labels=labels, idx_list=idx_list: labels[idx_list.index(i)]
+        )
+        if st.button("Delete Selected Row", key="delete_row"):
+            st.session_state.portfolio = (
+                st.session_state.portfolio
+                  .drop(to_delete)
+                  .reset_index(drop=True)
+            )
             save_portfolio(st.session_state.portfolio)
-            st.success("Row deleted and portfolio saved.")
+            st.success(f"Row {to_delete} deleted and portfolio saved.")
 else:
     st.info("No portfolio data available. Please add purchases.")
+
 
 # 9. Summary
 st.markdown("### 📦 Portfolio Summary with Gain/Loss")
