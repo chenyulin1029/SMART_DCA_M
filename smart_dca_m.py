@@ -237,3 +237,41 @@ if "portfolio" in st.session_state and not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to display cumulative investment.")
 
+# 12. Portfolio Growth vs Market Chart
+st.markdown("### 📉 Portfolio Value vs. Market Tickers")
+if "portfolio" in st.session_state and not st.session_state.portfolio.empty:
+    df = st.session_state.portfolio.copy()
+    df["Buy Date"] = pd.to_datetime(df["Buy Date"])
+    df = df.sort_values("Buy Date")
+
+    # Set date range
+    start = df["Buy Date"].min() - pd.Timedelta(days=5)
+    end = datetime.date.today()
+
+    # User selects which tickers to compare
+    default_compare = ["QQQ", "AAPL", "NVDA"]
+    available_tickers = list(set(default_compare + df["Ticker"].unique().tolist()))
+    compare_with = st.multiselect("Compare With Market Tickers:", available_tickers, default=default_compare)
+
+    # Download historical prices
+    price_data = yf.download(compare_with, start=start, end=end, progress=False)["Adj Close"]
+
+    # Calculate portfolio value over time
+    daily_value = pd.Series(0.0, index=price_data.index)
+    for _, row in df.iterrows():
+        t = row["Ticker"]
+        shares = row["Shares"]
+        buy_date = row["Buy Date"]
+        if t in price_data.columns:
+            subset = price_data.loc[price_data.index >= pd.to_datetime(buy_date), t]
+            daily_value.loc[subset.index] += subset * shares
+    daily_value.name = "Portfolio"
+
+    # Combine with selected ticker prices (normalized)
+    combined = pd.concat([daily_value] + [price_data[t] for t in compare_with if t in price_data.columns], axis=1)
+    combined = combined.dropna()
+    
+    st.line_chart(combined)
+else:
+    st.info("No data to chart against market.")
+
