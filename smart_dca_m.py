@@ -245,16 +245,23 @@ if not st.session_state.portfolio.empty:
     available_tickers = list(set(default_compare + df["Ticker"].unique().tolist()))
     compare_with = st.multiselect("Compare With Market Tickers:", available_tickers, default=default_compare)
 
+   # ⬇️ Add this block at the place you download compare_with prices
+try:
     price_data_raw = yf.download(compare_with, start=start, end=end, progress=False)
 
-if isinstance(price_data_raw.columns, pd.MultiIndex):
-    if "Adj Close" in price_data_raw.columns.get_level_values(0):
-        price_data = price_data_raw["Adj Close"]
+    # Handle both MultiIndex (usually from multiple tickers) and single-column cases
+    if isinstance(price_data_raw.columns, pd.MultiIndex):
+        if 'Adj Close' in price_data_raw.columns.get_level_values(0):
+            price_data = price_data_raw['Adj Close']
+        else:
+            st.error("Downloaded data does not contain 'Adj Close'. Check ticker symbols or data availability.")
+            st.stop()
     else:
-        st.error("Downloaded data does not contain 'Adj Close'.")
-        st.stop()
-else:
-    price_data = price_data_raw  # Already single-level, assume it's 'Adj Close'
+        price_data = price_data_raw  # Already single-level, assume it's Adj Close by default
+
+except Exception as e:
+    st.error(f"Failed to download price data: {e}")
+    st.stop()
 
 
     price_data = price_data.ffill().dropna()
