@@ -212,13 +212,39 @@ if not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to summarize.")
 
-# 10. Allocation Pie
+# 10. Allocation by Cost (Altair Pie Chart)
+import altair as alt
+
 st.markdown("### 🧩 Allocation by Cost")
+
 if not st.session_state.portfolio.empty:
-    pie_data = st.session_state.portfolio.groupby("Ticker")["Cost"].sum()
-    st.pyplot(pie_data.plot.pie(autopct='%1.1f%%', figsize=(5, 5), ylabel="").get_figure())
+    # Summarize cost by ticker
+    port = (
+        st.session_state.portfolio
+        .groupby("Ticker")["Cost"]
+        .sum()
+        .reset_index(name="Total Cost")
+    )
+
+    # Build Altair pie chart
+    pie = (
+        alt.Chart(port)
+        .mark_arc(innerRadius=50, stroke="#fff")
+        .encode(
+            theta=alt.Theta(field="Total Cost", type="quantitative"),
+            color=alt.Color(field="Ticker", type="nominal", legend=alt.Legend(title="Ticker")),
+            tooltip=[
+                alt.Tooltip("Ticker:N"),
+                alt.Tooltip("Total Cost:Q", format="$,.2f")
+            ]
+        )
+        .properties(width=400, height=400)
+    )
+
+    st.altair_chart(pie, use_container_width=True)
 else:
     st.info("No portfolio data to display allocation.")
+
 
 # 11. Cumulative Investment Over Time + Overlay Current Value Line
 st.markdown("### 📈 Cumulative Investment & Current Value Over Time")
