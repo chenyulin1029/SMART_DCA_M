@@ -5,8 +5,8 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
-import os
 import json
+import os
 
 # 1. Load tickers
 @st.cache_data
@@ -87,19 +87,38 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         "New Rotation": rotation
     }
 
-# 4. Load saved portfolio
-portfolio_file = "portfolio_data.json"
-if "portfolio" not in st.session_state:
-    if os.path.exists(portfolio_file):
-        with open(portfolio_file, "r") as f:
-            saved_data = json.load(f)
-            st.session_state.portfolio = pd.DataFrame(saved_data)
-    else:
-        st.session_state.portfolio = pd.DataFrame(columns=["Buy Date", "Ticker", "Price", "Shares", "Cost"])
-if 'rotation' not in st.session_state:
-    st.session_state.rotation = {"QQQ": 0, "AAPL": 0, "NVDA": 0}
+# --- Persistence helper functions ---
+PORTFOLIO_FILE = "portfolio.json"
 
-# 5. UI Layout
+def load_portfolio():
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, "r") as f:
+                data = json.load(f)
+            df = pd.DataFrame(data)
+            # Ensure columns exist even if file is empty
+            expected_cols = ["Buy Date", "Ticker", "Price", "Shares", "Cost"]
+            for col in expected_cols:
+                if col not in df.columns:
+                    df[col] = np.nan
+            return df[expected_cols]
+        except Exception:
+            return pd.DataFrame(columns=["Buy Date", "Ticker", "Price", "Shares", "Cost"])
+    else:
+        return pd.DataFrame(columns=["Buy Date", "Ticker", "Price", "Shares", "Cost"])
+
+def save_portfolio(df):
+    df_to_save = df.copy()
+    # Convert all data to basic types for JSON compatibility
+    df_to_save["Buy Date"] = df_to_save["Buy Date"].astype(str)
+    df_to_save["Ticker"] = df_to_save["Ticker"].astype(str)
+    df_to_save["Price"] = df_to_save["Price"].astype(float)
+    df_to_save["Shares"] = df_to_save["Shares"].astype(float)
+    df_to_save["Cost"] = df_to_save["Cost"].astype(float)
+    with open(PORTFOLIO_FILE, "w") as f:
+        json.dump(df_to_save.to_dict(orient="records"), f, indent=2)
+
+# 4. UI Layout
 st.title("📊 Smart DCA Investment Engine")
 
 ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
@@ -116,14 +135,22 @@ count_qqq = col1.number_input("QQQ", min_value=0, max_value=3, value=0)
 count_aapl = col2.number_input("AAPL", min_value=0, max_value=3, value=0)
 count_nvda = col3.number_input("NVDA", min_value=0, max_value=3, value=3)
 
+# 5. Session State Init & Load Portfolio with persistence
+if "portfolio" not in st.session_state:
+    st.session_state.portfolio = load_portfolio()
+if "rotation" not in st.session_state:
+    st.session_state.rotation = {"QQQ": 0, "AAPL": 0, "NVDA": 0}
+
 # 6. Run DCA (only suggestion)
 if st.button("Suggest via Smart DCA"):
     try:
         tickers = validate_tickers(ticker_str)
         init_counts = {'QQQ': count_qqq, 'AAPL': count_aapl, 'NVDA': count_nvda}
         result = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
+
         st.success("✅ Smart DCA Suggestion:")
         st.write(result)
+
     except Exception as e:
         st.error(f"❌ {e}")
 
@@ -145,25 +172,31 @@ with st.form("manual_entry"):
             "Cost": cost
         }
         st.session_state.portfolio = pd.concat([st.session_state.portfolio, pd.DataFrame([new_row])], ignore_index=True)
-        st.success("Purchase added.")
-        with open(portfolio_file, "w") as f:
-            json.dump(st.session_state.portfolio.to_dict(orient="records"), f, indent=2)
+        save_portfolio(st.session_state.portfolio)
+        st.success("Purchase added and saved.")
 
 # 8. Show & Edit Portfolio
 st.markdown("### 📜 Your Investment Portfolio")
 if not st.session_state.portfolio.empty:
-    st.dataframe(st.session_state.portfolio, use_container_width=True)
+    edited_df = st.data_editor(st.session_state.portfolio, num_rows="dynamic", use_container_width=True)
+    if not edited_df.equals(st.session_state.portfolio):
+        st.session_state.portfolio = edited_df.reset_index(drop=True)
+        save_portfolio(st.session_state.portfolio)
+        st.success("Portfolio updated and saved.")
+    # Delete row section
     with st.expander("🗑️ Delete a Row"):
-        index_to_delete = st.number_input("Row index to delete", min_value=0, max_value=len(st.session_state.portfolio)-1)
+        index_to_delete = st.number_input("Row index to delete", min_value=0, max_value=len(st.session_state.portfolio)-1, step=1)
         if st.button("Delete Selected Row"):
             st.session_state.portfolio = st.session_state.portfolio.drop(index_to_delete).reset_index(drop=True)
-            st.success("Row deleted.")
-            with open(portfolio_file, "w") as f:
-                json.dump(st.session_state.portfolio.to_dict(orient="records"), f, indent=2)
+            save_portfolio(st.session_state.portfolio)
+            st.success("Row deleted and portfolio saved.")
+
+else:
+    st.info("No portfolio data available. Please add purchases.")
 
 # 9. Summary and Gains
 st.markdown("### 📦 Portfolio Summary with Gain/Loss")
-if not st.session_state.portfolio.empty:
+if "portfolio" in st.session_state and not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
     tickers = df["Ticker"].unique()
     current_prices = {t: get_current_price(t) for t in tickers}
@@ -176,21 +209,31 @@ if not st.session_state.portfolio.empty:
         Current_Value=("Current Value", "sum")
     )
     summary["Gain/Loss"] = summary["Current_Value"] - summary["Total_Cost"]
-    st.dataframe(summary.style.format({"Total_Cost": "${:.2f}", "Current_Price": "${:.2f}", "Current_Value": "${:.2f}", "Gain/Loss": "${:.2f}"}), use_container_width=True)
+    st.dataframe(summary.style.format({
+        "Total_Cost": "${:.2f}",
+        "Current_Price": "${:.2f}",
+        "Current_Value": "${:.2f}",
+        "Gain/Loss": "${:.2f}"
+    }), use_container_width=True)
+else:
+    st.info("No portfolio data to summarize.")
 
 # 10. Allocation Pie
 st.markdown("### 🧩 Allocation by Cost")
-if not st.session_state.portfolio.empty:
+if "portfolio" in st.session_state and not st.session_state.portfolio.empty:
     pie_data = st.session_state.portfolio.groupby("Ticker")["Cost"].sum()
     st.pyplot(pie_data.plot.pie(autopct='%1.1f%%', figsize=(5, 5), ylabel="").get_figure())
+else:
+    st.info("No portfolio data to display allocation.")
 
 # 11. Cumulative Investment Over Time
 st.markdown("### 📈 Cumulative Investment Over Time")
-if not st.session_state.portfolio.empty:
+if "portfolio" in st.session_state and not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
     df["Buy Date"] = pd.to_datetime(df["Buy Date"])
     df = df.sort_values("Buy Date")
     df["Cumulative Cost"] = df["Cost"].cumsum()
     st.line_chart(df.set_index("Buy Date")["Cumulative Cost"])
-
+else:
+    st.info("No portfolio data to display cumulative investment.")
 
