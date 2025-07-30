@@ -231,95 +231,75 @@ if not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to display cumulative investment.")
 
-# 12. Portfolio Value vs. Market Tickers – Growth Comparison + Individual Buy Gains
+# 12. Portfolio Value vs. Market Tickers – Individual Buys vs. Current Price
+import plotly.graph_objects as go
+
 st.markdown("## 📈 Portfolio Growth vs. Market Tickers")
 
-if not portfolio["buy_log"]:
+# Grab your purchase DataFrame directly
+df = st.session_state.portfolio.copy()
+
+if df.empty:
     st.info("No purchase data available to plot performance.")
 else:
-    try:
-        df = pd.DataFrame(portfolio["buy_log"])
+    # Ensure proper types
+    df["Buy Date"] = pd.to_datetime(df["Buy Date"])
+    df["Price"]    = df["Price"].astype(float)
+    df["Shares"]   = df["Shares"].astype(float)
+    # Calculate current prices
+    tickers = df["Ticker"].unique().tolist()
+    current_prices = {t: get_current_price(t) for t in tickers}
 
-        # Auto-detect buy price column
-        if "Buy Price" in df.columns:
-            pass
-        elif "Price" in df.columns:
-            df = df.rename(columns={"Price": "Buy Price"})
-        else:
-            st.error("Buy log is missing a 'Buy Price' or 'Price' column.")
-            st.stop()
+    # Build a DataFrame for plotting
+    plot_rows = []
+    today = pd.to_datetime("today")
+    for _, row in df.iterrows():
+        ticker     = row["Ticker"]
+        buy_date   = row["Buy Date"]
+        buy_price  = row["Price"]
+        curr_price = current_prices.get(ticker, None)
+        if curr_price is None:
+            continue
+        gain_pct   = (curr_price - buy_price) / buy_price * 100
+        label = (
+            f"{ticker}<br>"
+            f"Buy: {buy_date.date()} @ ${buy_price:.2f}<br>"
+            f"Now: ${curr_price:.2f}<br>"
+            f"Change: {gain_pct:+.2f}%"
+        )
+        plot_rows.append({
+            "Ticker": ticker,
+            "Date": buy_date,
+            "Buy Price": buy_price,
+            "Current Price": curr_price,
+            "Gain %": gain_pct,
+            "Label": label
+        })
 
-        df["Buy Price"] = df["Buy Price"].astype(float)
-        df["Date"] = pd.to_datetime(df["Date"])
-        df["Shares"] = df["Shares"].astype(float)
+    plot_df = pd.DataFrame(plot_rows)
+    if plot_df.empty:
+        st.warning("No valid price data to plot.")
+    else:
+        # Create the figure
+        fig = go.Figure()
 
-        # Define tickers and date range
-        unique_tickers = df["Ticker"].unique().tolist()
-        start_date = df["Date"].min() - pd.Timedelta(days=5)
-        end_date = pd.to_datetime("today")
+        # Plot each buy as a line+marker from buy_price -> current_price
+        for ticker in plot_df["Ticker"].unique():
+            sub = plot_df[plot_df["Ticker"] == ticker]
+            fig.add_trace(go.Scatter(
+                x=[*sub["Date"], today],
+                y=[*sub["Buy Price"], current_prices[ticker]],
+                mode="lines+markers",
+                name=ticker,
+                text=[*sub["Label"], f"{ticker} Current: ${current_prices[ticker]:.2f}"],
+                hoverinfo="text"
+            ))
 
-        # Download historical data
-        market_prices = yf.download(unique_tickers, start=start_date, end=end_date)["Adj Close"]
-
-        if market_prices.empty:
-            st.warning("No market price data could be downloaded.")
-        else:
-            # Get current prices for each ticker
-            current_prices = market_prices.ffill().iloc[-1]
-
-            # Build scatter plot: Each point is a buy
-            plot_data = df.copy()
-            plot_data["Current Price"] = plot_data["Ticker"].map(current_prices)
-            plot_data["Growth %"] = ((plot_data["Current Price"] - plot_data["Buy Price"]) / plot_data["Buy Price"]) * 100
-            plot_data["Gain/Loss"] = plot_data["Current Price"] - plot_data["Buy Price"]
-
-            # Generate hover labels
-            plot_data["Label"] = (
-                plot_data["Ticker"]
-                + "<br>Date: " + plot_data["Date"].dt.strftime("%Y-%m-%d")
-                + "<br>Buy @ $" + plot_data["Buy Price"].round(2).astype(str)
-                + "<br>Now: $" + plot_data["Current Price"].round(2).astype(str)
-                + "<br>Change: " + plot_data["Growth %"].round(2).astype(str) + "%"
-            )
-
-            # Scatter plot
-            fig = go.Figure()
-
-            for ticker in unique_tickers:
-                subset = plot_data[plot_data["Ticker"] == ticker]
-                fig.add_trace(go.Scatter(
-                    x=subset["Date"],
-                    y=subset["Buy Price"],
-                    mode='markers+text',
-                    marker=dict(size=12, color='royalblue'),
-                    name=ticker,
-                    text=subset["Growth %"].round(1).astype(str) + '%',
-                    hovertext=subset["Label"],
-                    hoverinfo="text"
-                ))
-
-            # Add current price trend lines
-            for ticker in unique_tickers:
-                current_price = current_prices[ticker]
-                fig.add_trace(go.Scatter(
-                    x=[plot_data["Date"].min(), plot_data["Date"].max()],
-                    y=[current_price, current_price],
-                    mode='lines',
-                    line=dict(dash='dot', color='gray'),
-                    name=f"{ticker} Now ${current_price:.2f}",
-                    hoverinfo='skip',
-                    showlegend=True
-                ))
-
-            fig.update_layout(
-                title="Each Buy Entry vs. Current Price",
-                xaxis_title="Purchase Date",
-                yaxis_title="Buy Price & Current Price",
-                height=550,
-                template="plotly_white"
-            )
-
-            st.plotly_chart(fig, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"Error displaying portfolio vs. market tickers: {e}")
+        fig.update_layout(
+            title="Each Purchase: Buy Price → Current Price",
+            xaxis_title="Date",
+            yaxis_title="Price (USD)",
+            height=500,
+            legend_title="Ticker"
+        )
+        st.plotly_chart(fig, use_container_width=True)
