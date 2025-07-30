@@ -220,13 +220,31 @@ if not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to display allocation.")
 
-# 11. Cumulative Investment Chart
+# 11. Cumulative Investment Over Time + Portfolio Metrics
 st.markdown("### 📈 Cumulative Investment Over Time")
+
 if not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
     df["Buy Date"] = pd.to_datetime(df["Buy Date"])
     df = df.sort_values("Buy Date")
     df["Cumulative Cost"] = df["Cost"].cumsum()
     st.line_chart(df.set_index("Buy Date")["Cumulative Cost"])
+
+    # --- new metrics below the chart ---
+    # calculate current value and gain/loss
+    tickers = df["Ticker"].unique().tolist()
+    current_prices = {t: get_current_price(t) for t in tickers}
+    df["Current Price"] = df["Ticker"].map(current_prices)
+    df["Current Value"] = df["Shares"] * df["Current Price"]
+
+    total_cost = df["Cost"].sum()
+    total_value = df["Current Value"].sum()
+    gain = total_value - total_cost
+    gain_pct = (gain / total_cost) * 100 if total_cost > 0 else 0
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("💰 Invested", f"${total_cost:,.2f}")
+    col2.metric("📈 Value Now", f"${total_value:,.2f}")
+    col3.metric("📊 Gain/Loss", f"${gain:,.2f}", delta=f"{gain_pct:.2f}%")
 else:
     st.info("No portfolio data to display cumulative investment.")
