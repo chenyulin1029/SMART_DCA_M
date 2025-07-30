@@ -119,26 +119,28 @@ def save_portfolio(df):
 # 4. UI Layout
 st.title("📊 Smart DCA Investment Engine")
 
-# Free‑form ticker entry (keep this for fallback)
+# Free‑form ticker entry (fallback)
 ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
 
 # A→Z multiselect override
 st.markdown("#### Or pick tickers from the universe")
 ticker_list = st.multiselect(
-    "Select Tickers", 
-    options=sorted(valid_tickers), 
+    "Select Tickers",
+    options=sorted(valid_tickers),
     default=["QQQ", "AAPL", "NVDA"],
     help="Choose any tickers; defaults to QQQ, AAPL, NVDA"
 )
-# If user used multiselect, override free‑form
+
+# Decide which list to use
 if ticker_list:
     tickers_to_use = ticker_list
 else:
     tickers_to_use = [t.strip().upper() for t in ticker_str.split(",") if t.strip()]
 
-# Investment amount controls (unchanged)
-preset = st.radio("Choose Investment Preset", ['$450 (Default)', '$600 (Future)'])
-custom_amt = st.number_input("Or enter custom amount", min_value=0.0, max_value=5000.0, step=10.0, value=0.0)
+# Investment amount controls
+preset     = st.radio("Choose Investment Preset", ['$450 (Default)', '$600 (Future)'])
+custom_amt = st.number_input("Or enter custom amount", min_value=0.0, max_value=5000.0,
+                             step=10.0, value=0.0)
 amount = 450 if (custom_amt == 0 and preset == '$450 (Default)') else (600 if custom_amt == 0 else custom_amt)
 
 cutoff_date = st.date_input("Cutoff Date", value=get_last_trade_and_buy_dates()[1])
@@ -147,9 +149,8 @@ buy_date    = st.date_input("Buy Date",   value=get_last_trade_and_buy_dates()[2
 # Dynamic Rotation Counts per selected ticker
 st.markdown("### Rotation Counts")
 rotation_cols = st.columns(len(tickers_to_use))
-init_counts = {}
+init_counts    = {}
 for idx, t in enumerate(tickers_to_use):
-    # use stored session_state.rotation as default
     default_ct = st.session_state.rotation.get(t, 0)
     init_counts[t] = rotation_cols[idx].number_input(
         f"{t} Count", min_value=0, max_value=3, value=default_ct
@@ -165,19 +166,19 @@ if "rotation" not in st.session_state:
 # 6. Run DCA (only suggestion)
 if st.button("Suggest via Smart DCA"):
     try:
-        # Validate and prepare tickers/counts from Section 4
+        # validate dynamic tickers
         tickers = validate_tickers(",".join(tickers_to_use))
-        
-        # Run the engine
+
+        # run with dynamic init_counts
         result = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
-        
+
         st.success("✅ Smart DCA Suggestion:")
         st.write(result)
 
-        # (Optional)—detailed momentum breakdown can go here...
-
+        # … your existing momentum breakdown/chart code …
     except Exception as e:
         st.error(f"❌ {e}")
+
 
 
 # 7. Manual Entry
@@ -322,3 +323,4 @@ if not st.session_state.portfolio.empty:
 
 else:
     st.info("No portfolio data to display cumulative investment.")
+
