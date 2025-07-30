@@ -254,7 +254,13 @@ if "portfolio" in st.session_state and not st.session_state.portfolio.empty:
     compare_with = st.multiselect("Compare With Market Tickers:", available_tickers, default=default_compare)
 
     # Download historical prices
-    price_data = yf.download(compare_with, start=start, end=end, progress=False)["Adj Close"]
+    raw_data = yf.download(compare_with, start=start, end=end, progress=False)
+if isinstance(raw_data.columns, pd.MultiIndex):
+    price_data = raw_data["Adj Close"]
+else:
+    price_data = pd.DataFrame(raw_data["Adj Close"])
+    price_data.columns = compare_with  # Single column, label it
+
 
     # Calculate portfolio value over time
     daily_value = pd.Series(0.0, index=price_data.index)
