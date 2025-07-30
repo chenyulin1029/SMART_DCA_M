@@ -267,13 +267,17 @@ with st.form("manual_entry"):
 
 # 8. Show Portfolio
 st.markdown("### 📜 Your Investment Portfolio")
+
 if not st.session_state.portfolio.empty:
-    # allow in‑place edits via data_editor
+    # Dynamic key forces re‑creation whenever the number of rows changes
+    editor_key = f"portfolio_editor_{len(st.session_state.portfolio)}"
     edited_df = st.data_editor(
         st.session_state.portfolio,
         num_rows="dynamic",
-        use_container_width=True
+        use_container_width=True,
+        key=editor_key
     )
+
     if not edited_df.equals(st.session_state.portfolio):
         st.session_state.portfolio = edited_df.reset_index(drop=True)
         save_portfolio(st.session_state.portfolio)
@@ -281,17 +285,19 @@ if not st.session_state.portfolio.empty:
         st.experimental_rerun()
 
     with st.expander("🗑️ Delete a Row"):
+        # Build a list of labels for each row
         options = [
-            (i, f"{i} | {row.Ticker} @ {row['Buy Date']}, shares={row.Shares}")
+            (i, f"{i} │ {row.Ticker} on {row['Buy Date']} ({row.Shares} shares)")
             for i, row in st.session_state.portfolio.iterrows()
         ]
         idx_list, labels = zip(*options)
         to_delete = st.selectbox(
             "Select row to delete",
             options=idx_list,
-            format_func=lambda i, labels=labels, idx_list=idx_list: labels[idx_list.index(i)]
+            format_func=lambda i: labels[idx_list.index(i)]
         )
         if st.button("Delete Selected Row", key="delete_row"):
+            # Drop and save
             st.session_state.portfolio = (
                 st.session_state.portfolio
                   .drop(to_delete)
@@ -299,7 +305,7 @@ if not st.session_state.portfolio.empty:
             )
             save_portfolio(st.session_state.portfolio)
             st.success(f"Row {to_delete} deleted and portfolio saved.")
-            # Force a full rerun so charts below reflect the deletion immediately
+            # Force rerun so data_editor & charts reload
             st.experimental_rerun()
 
 else:
