@@ -7,20 +7,18 @@ import numpy as np
 import datetime
 import json
 import os
-import uuid   # ← NEW import
+import uuid   # ← NEW
 
 # -----------------------------------------------
 # 0. Per-session user_id for file isolation
 # -----------------------------------------------
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
-# Now each session writes to its own file:
 PORTFOLIO_FILE = f"portfolio_{st.session_state.user_id}.json"
+GLOBAL_FILE    = "portfolio.json"
 # -----------------------------------------------
 
-# -----------------------------------------------
 # 1. Load tickers
-# -----------------------------------------------
 @st.cache_data
 def load_valid_tickers():
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -28,9 +26,7 @@ def load_valid_tickers():
     return set(table['Symbol'].tolist() + ['QQQ', 'NVDA'])
 valid_tickers = load_valid_tickers()
 
-# -----------------------------------------------
 # 2. Utility functions
-# -----------------------------------------------
 def fetch_price(ticker, date):
     df = yf.download(
         ticker,
@@ -69,9 +65,7 @@ def get_last_trade_and_buy_dates():
         tentative += datetime.timedelta(days=1)
     return today, last_trade, tentative
 
-# -----------------------------------------------
 # 3. Smart DCA logic
-# -----------------------------------------------
 def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
     prices = {t: fetch_price(t, cutoff_date) for t in tickers}
     raw = {}
@@ -86,7 +80,6 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
     rotation = init_counts.copy()
     sorted_raw = sorted(raw.items(), key=lambda x: x[1], reverse=True)
 
-    # pick candidate
     for t, score in sorted_raw:
         if rotation.get(t, 0) < 3:
             candidate = t
@@ -113,10 +106,9 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         "New Rotation": rotation
     }
 
-# -----------------------------------------------
-# Persistence helpers (now using per-session file)
-# -----------------------------------------------
+# --- Persistence helpers (loads global then per-session) ---
 def load_portfolio():
+    # 1) If session file exists, load it
     if os.path.exists(PORTFOLIO_FILE):
         try:
             with open(PORTFOLIO_FILE, "r") as f:
@@ -128,6 +120,30 @@ def load_portfolio():
             return df[["Buy Date","Ticker","Price","Shares","Cost"]]
         except:
             pass
+
+    # 2) Otherwise, if you committed a global 'portfolio.json', load that first
+    if os.path.exists(GLOBAL_FILE):
+        try:
+            with open(GLOBAL_FILE, "r") as f:
+                data = json.load(f)
+            df = pd.DataFrame(data)
+            for col in ["Buy Date","Ticker","Price","Shares","Cost"]:
+                if col not in df.columns:
+                    df[col] = np.nan
+            # write it into the session file
+            df2 = df.copy()
+            df2["Buy Date"] = df2["Buy Date"].astype(str)
+            df2["Ticker"]   = df2["Ticker"].astype(str)
+            df2["Price"]    = df2["Price"].astype(float)
+            df2["Shares"]   = df2["Shares"].astype(float)
+            df2["Cost"]     = df2["Cost"].astype(float)
+            with open(PORTFOLIO_FILE, "w") as f:
+                json.dump(df2.to_dict(orient="records"), f, indent=2)
+            return df[["Buy Date","Ticker","Price","Shares","Cost"]]
+        except:
+            pass
+
+    # 3) fallback to empty
     return pd.DataFrame(columns=["Buy Date","Ticker","Price","Shares","Cost"])
 
 def save_portfolio(df):
@@ -140,16 +156,13 @@ def save_portfolio(df):
     with open(PORTFOLIO_FILE, "w") as f:
         json.dump(df2.to_dict(orient="records"), f, indent=2)
 
-# -----------------------------------------------
 # 4. UI Layout
-# -----------------------------------------------
 st.title("📊 Smart DCA Investment Engine")
 
 # ensure rotation exists
 if "rotation" not in st.session_state:
     st.session_state.rotation = {}
 
-# ticker entry
 ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
 st.markdown("#### Or pick tickers from the universe")
 ticker_list = st.multiselect("Select Tickers",
@@ -160,7 +173,6 @@ tickers_to_use = ticker_list if ticker_list else [
     t.strip().upper() for t in ticker_str.split(",") if t.strip()
 ]
 
-# investment amount
 preset     = st.radio("Choose Preset",["$450 (Default)","$600 (Future)"])
 custom_amt = st.number_input("Or enter custom amount",
                              min_value=0.0, max_value=5000.0,
@@ -173,7 +185,6 @@ cutoff_date = st.date_input("Cutoff Date",
 buy_date    = st.date_input("Buy Date",
                 value=get_last_trade_and_buy_dates()[2])
 
-# rotation counts
 st.markdown("### Rotation Counts")
 cols = st.columns(len(tickers_to_use))
 init_counts = {}
@@ -181,11 +192,11 @@ for i,t in enumerate(tickers_to_use):
     default_ct = st.session_state.rotation.get(t, 0)
     init_counts[t] = cols[i].number_input(f"{t} Count", 0, 3, default_ct)
 
-# 5. load portfolio
+# 5. load portfolio into session
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = load_portfolio()
 
-# 6. Run DCA suggestion
+# 6. DCA Suggestion
 if st.button("Suggest via Smart DCA"):
     try:
         tickers = validate_tickers(",".join(tickers_to_use))
@@ -193,7 +204,6 @@ if st.button("Suggest via Smart DCA"):
                           cutoff_date, buy_date, amount)
         st.success("✅ Suggestion:")
         st.write(res)
-        # … you can still include your momentum breakdown chart here …
     except Exception as e:
         st.error(f"❌ {e}")
 
@@ -219,7 +229,7 @@ with st.form("manual_entry"):
         save_portfolio(st.session_state.portfolio)
         st.success("Added & saved.")
 
-# 8. Show Portfolio
+# 8. Show/Edit/Delete Portfolio
 st.markdown("### 📜 Your Investment Portfolio")
 if not st.session_state.portfolio.empty:
     editor_key = f"portfolio_editor_{len(st.session_state.portfolio)}"
@@ -283,7 +293,7 @@ if not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to summarize.")
 
-# 10. Allocation by Cost (Altair Pie Chart)
+# 10. Allocation Pie
 import altair as alt
 st.markdown("### 🧩 Allocation by Cost")
 if not st.session_state.portfolio.empty:
@@ -310,7 +320,7 @@ if not st.session_state.portfolio.empty:
 else:
     st.info("No portfolio data to display allocation.")
 
-# 11. Cumulative Investment Over Time + Overlay Current Value
+# 11. Cumulative Investment Over Time
 st.markdown("### 📈 Cumulative Investment & Current Value Over Time")
 if not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
@@ -339,3 +349,4 @@ if not st.session_state.portfolio.empty:
     c3.metric("📊 Gain/Loss",  f"${gain:,.2f}", delta=f"{gain_pct:.2f}%")
 else:
     st.info("No portfolio data to display cumulative investment.")
+
