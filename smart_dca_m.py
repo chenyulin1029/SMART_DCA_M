@@ -6,47 +6,31 @@ import pandas as pd
 import numpy as np
 import datetime
 import json
-import urllib.parse
+import os
+import uuid   # ← NEW import
 
 # -----------------------------------------------
-# 0. Query-param persistence (per-tab isolation)
+# 0. Per-session user_id for file isolation
 # -----------------------------------------------
-
-def load_portfolio() -> pd.DataFrame:
-    """Load portfolio from the URL query-param 'portfolio' (JSON-encoded)."""
-    raw = st.query_params.get("portfolio", ["[]"])[0]
-    try:
-        records = json.loads(urllib.parse.unquote(raw))
-        df = pd.DataFrame(records)
-        for col in ["Buy Date","Ticker","Price","Shares","Cost"]:
-            if col not in df.columns:
-                df[col] = np.nan
-        return df[["Buy Date","Ticker","Price","Shares","Cost"]]
-    except Exception:
-        return pd.DataFrame(columns=["Buy Date","Ticker","Price","Shares","Cost"])
-
-def save_portfolio(df: pd.DataFrame):
-    """Save portfolio back into the URL query-param 'portfolio'."""
-    records = df.to_dict(orient="records")
-    encoded = urllib.parse.quote(json.dumps(records))
-    st.experimental_set_query_params(portfolio=encoded)
+if "user_id" not in st.session_state:
+    st.session_state.user_id = str(uuid.uuid4())
+# Now each session writes to its own file:
+PORTFOLIO_FILE = f"portfolio_{st.session_state.user_id}.json"
+# -----------------------------------------------
 
 # -----------------------------------------------
 # 1. Load tickers
 # -----------------------------------------------
-
 @st.cache_data
 def load_valid_tickers():
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     table = pd.read_html(url)[0]
     return set(table['Symbol'].tolist() + ['QQQ', 'NVDA'])
-
 valid_tickers = load_valid_tickers()
 
 # -----------------------------------------------
 # 2. Utility functions
 # -----------------------------------------------
-
 def fetch_price(ticker, date):
     df = yf.download(
         ticker,
@@ -61,8 +45,10 @@ def fetch_price(ticker, date):
 def get_current_price(ticker):
     df = yf.download(
         ticker,
-        period="2d", interval="1d",
-        progress=False, auto_adjust=False
+        period="2d",
+        interval="1d",
+        progress=False,
+        auto_adjust=False
     )
     col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
     return float(df[col].iloc[-1]) if not df.empty else 0.0
@@ -86,7 +72,6 @@ def get_last_trade_and_buy_dates():
 # -----------------------------------------------
 # 3. Smart DCA logic
 # -----------------------------------------------
-
 def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
     prices = {t: fetch_price(t, cutoff_date) for t in tickers}
     raw = {}
@@ -101,220 +86,256 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
     rotation = init_counts.copy()
     sorted_raw = sorted(raw.items(), key=lambda x: x[1], reverse=True)
 
-    for t, _ in sorted_raw:
+    # pick candidate
+    for t, score in sorted_raw:
         if rotation.get(t, 0) < 3:
             candidate = t
             break
     else:
         candidate = sorted_raw[0][0]
-        for k in rotation:
-            rotation[k] = 0
+        for t in rotation:
+            rotation[t] = 0
 
     rotation[candidate] += 1
-    for k in rotation:
-        if k != candidate:
-            rotation[k] = 0
+    for t in rotation:
+        if t != candidate:
+            rotation[t] = 0
 
     price  = prices[candidate]
     shares = np.floor(invest_amt / price * 1000) / 1000
     cost   = shares * price
 
     return {
-        "Buy Ticker": candidate,
-        "Price":      price,
-        "Shares":     shares,
-        "Cost":       cost,
+        "Buy Ticker":   candidate,
+        "Price":        price,
+        "Shares":       shares,
+        "Cost":         cost,
         "New Rotation": rotation
     }
 
 # -----------------------------------------------
+# Persistence helpers (now using per-session file)
+# -----------------------------------------------
+def load_portfolio():
+    if os.path.exists(PORTFOLIO_FILE):
+        try:
+            with open(PORTFOLIO_FILE, "r") as f:
+                data = json.load(f)
+            df = pd.DataFrame(data)
+            for col in ["Buy Date","Ticker","Price","Shares","Cost"]:
+                if col not in df.columns:
+                    df[col] = np.nan
+            return df[["Buy Date","Ticker","Price","Shares","Cost"]]
+        except:
+            pass
+    return pd.DataFrame(columns=["Buy Date","Ticker","Price","Shares","Cost"])
+
+def save_portfolio(df):
+    df2 = df.copy()
+    df2["Buy Date"] = df2["Buy Date"].astype(str)
+    df2["Ticker"]   = df2["Ticker"].astype(str)
+    df2["Price"]    = df2["Price"].astype(float)
+    df2["Shares"]   = df2["Shares"].astype(float)
+    df2["Cost"]     = df2["Cost"].astype(float)
+    with open(PORTFOLIO_FILE, "w") as f:
+        json.dump(df2.to_dict(orient="records"), f, indent=2)
+
+# -----------------------------------------------
 # 4. UI Layout
 # -----------------------------------------------
-
 st.title("📊 Smart DCA Investment Engine")
 
-# 4.1 Smart-DCA ticker picker
+# ensure rotation exists
 if "rotation" not in st.session_state:
     st.session_state.rotation = {}
 
+# ticker entry
 ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
 st.markdown("#### Or pick tickers from the universe")
-ticker_list = st.multiselect(
-    "Select Tickers",
+ticker_list = st.multiselect("Select Tickers",
     options=sorted(valid_tickers),
-    default=["QQQ","AAPL","NVDA"]
+    default=["QQQ","AAPL","NVDA"],
 )
-tickers_to_use = ticker_list or [t.strip().upper() for t in ticker_str.split(",") if t.strip()]
+tickers_to_use = ticker_list if ticker_list else [
+    t.strip().upper() for t in ticker_str.split(",") if t.strip()
+]
 
-preset     = st.radio("Choose Preset", ["$450 (Default)","$600 (Future)"])
-custom_amt = st.number_input("Or enter custom amount", 0.0, 5000.0, 0.0, step=10.0)
-amount     = 450 if (custom_amt==0 and preset=="$450 (Default)") else (600 if custom_amt==0 else custom_amt)
+# investment amount
+preset     = st.radio("Choose Preset",["$450 (Default)","$600 (Future)"])
+custom_amt = st.number_input("Or enter custom amount",
+                             min_value=0.0, max_value=5000.0,
+                             step=10.0, value=0.0)
+amount     = 450 if (custom_amt==0 and preset=="$450 (Default)") else \
+             (600 if custom_amt==0 else custom_amt)
 
-cutoff_date = st.date_input("Cutoff Date", value=get_last_trade_and_buy_dates()[1])
-buy_date    = st.date_input("Buy Date",   value=get_last_trade_and_buy_dates()[2])
+cutoff_date = st.date_input("Cutoff Date",
+                value=get_last_trade_and_buy_dates()[1])
+buy_date    = st.date_input("Buy Date",
+                value=get_last_trade_and_buy_dates()[2])
 
+# rotation counts
 st.markdown("### Rotation Counts")
 cols = st.columns(len(tickers_to_use))
 init_counts = {}
-for i, t in enumerate(tickers_to_use):
-    default_ct = st.session_state.rotation.get(t,0)
+for i,t in enumerate(tickers_to_use):
+    default_ct = st.session_state.rotation.get(t, 0)
     init_counts[t] = cols[i].number_input(f"{t} Count", 0, 3, default_ct)
 
-# -----------------------------------------------
-# 5. Load portfolio (from URL)
-# -----------------------------------------------
+# 5. load portfolio
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = load_portfolio()
 
-# -----------------------------------------------
-# 6. Run DCA (suggestion only)
-# -----------------------------------------------
+# 6. Run DCA suggestion
 if st.button("Suggest via Smart DCA"):
     try:
         tickers = validate_tickers(",".join(tickers_to_use))
-        res     = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
-        st.success("✅ Smart DCA Suggestion:")
+        res     = run_dca(tickers, init_counts,
+                          cutoff_date, buy_date, amount)
+        st.success("✅ Suggestion:")
         st.write(res)
-        # … you can re-insert your momentum breakdown & chart here …
+        # … you can still include your momentum breakdown chart here …
     except Exception as e:
         st.error(f"❌ {e}")
 
-# -----------------------------------------------
 # 7. Manual Entry
-# -----------------------------------------------
 st.markdown("### ➕ Manually Add Purchase")
 with st.form("manual_entry"):
-    md = st.date_input("Buy Date", value=datetime.date.today())
-    mt = st.selectbox("Ticker", sorted(valid_tickers))
-    mp = st.number_input("Buy Price", min_value=0.01, step=0.01)
-    ms = st.number_input("Shares",    min_value=0.001, step=0.001)
+    md = st.date_input("Buy Date",     value=datetime.date.today())
+    mt = st.selectbox("Ticker",        sorted(valid_tickers))
+    mp = st.number_input("Buy Price",  min_value=0.01, step=0.01)
+    ms = st.number_input("Shares",     min_value=0.001, step=0.001)
     if st.form_submit_button("Add Purchase"):
         cost = mp * ms
-        nr = {"Buy Date":str(md),"Ticker":mt,"Price":mp,"Shares":ms,"Cost":cost}
+        nr = {"Buy Date":str(md),
+              "Ticker":  mt,
+              "Price":   mp,
+              "Shares":  ms,
+              "Cost":    cost}
         st.session_state.portfolio = pd.concat(
-            [st.session_state.portfolio, pd.DataFrame([nr])],
+            [st.session_state.portfolio,
+             pd.DataFrame([nr])],
             ignore_index=True
         )
         save_portfolio(st.session_state.portfolio)
         st.success("Added & saved.")
 
-# -----------------------------------------------
-# 8. Show & Edit Portfolio
-# -----------------------------------------------
+# 8. Show Portfolio
 st.markdown("### 📜 Your Investment Portfolio")
 if not st.session_state.portfolio.empty:
-    key = f"editor_{len(st.session_state.portfolio)}"
-    edited = st.data_editor(
+    editor_key = f"portfolio_editor_{len(st.session_state.portfolio)}"
+    edited_df = st.data_editor(
         st.session_state.portfolio,
         num_rows="dynamic",
         use_container_width=True,
-        key=key
+        key=editor_key
     )
-    if not edited.equals(st.session_state.portfolio):
-        st.session_state.portfolio = edited.reset_index(drop=True)
+    if not edited_df.equals(st.session_state.portfolio):
+        st.session_state.portfolio = edited_df.reset_index(drop=True)
         save_portfolio(st.session_state.portfolio)
-        st.success("Portfolio updated & saved.")
+        st.success("Portfolio updated and saved.")
 
     with st.expander("🗑️ Delete a Row"):
-        opts = [
-            (i, f"{i}: {r.Ticker} on {r['Buy Date']} — {r.Shares} shares")
-            for i, r in st.session_state.portfolio.iterrows()
+        options = [
+            (i, f"{i}: {row.Ticker} on {row['Buy Date']} — {row.Shares} shares")
+            for i, row in st.session_state.portfolio.iterrows()
         ]
-        idxs, labels = zip(*opts)
-        to_del = st.selectbox("Select row to delete", options=idxs, format_func=lambda i: labels[idxs.index(i)])
-        if st.button("Delete Selected Row"):
+        idx_list, labels = zip(*options)
+        to_delete = st.selectbox(
+            "Select row to delete",
+            options=idx_list,
+            format_func=lambda i: labels[idx_list.index(i)]
+        )
+        if st.button("Delete Selected Row", key="delete_row"):
             st.session_state.portfolio = (
-                st.session_state.portfolio.drop(to_del).reset_index(drop=True)
+                st.session_state.portfolio
+                  .drop(to_delete)
+                  .reset_index(drop=True)
             )
             save_portfolio(st.session_state.portfolio)
-            st.success(f"Deleted row {to_del}.")
+            st.success(f"Row {to_delete} deleted and saved.")
 else:
-    st.info("No portfolio data — please add purchases above.")
+    st.info("No portfolio data available. Please add purchases.")
 
-# -----------------------------------------------
 # 9. Summary
-# -----------------------------------------------
 st.markdown("### 📦 Portfolio Summary with Gain/Loss")
-if st.session_state.portfolio.empty:
-    st.info("No data to summarize.")
-else:
+if not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
     tickers = df["Ticker"].unique()
-    prices  = {t: get_current_price(t) for t in tickers}
-    df["Current Price"] = df["Ticker"].map(prices)
+    current_prices = {t: get_current_price(t) for t in tickers}
+    df["Current Price"] = df["Ticker"].map(current_prices)
     df["Current Value"] = df["Current Price"] * df["Shares"]
     summary = df.groupby("Ticker").agg(
-        Total_Shares=("Shares","sum"),
-        Total_Cost=("Cost","sum"),
-        Current_Price=("Current Price","mean"),
-        Current_Value=("Current Value","sum"),
+        Total_Shares=("Shares", "sum"),
+        Total_Cost=("Cost",   "sum"),
+        Current_Price=("Current Price", "mean"),
+        Current_Value=("Current Value", "sum")
     )
     summary["Gain/Loss"] = summary["Current_Value"] - summary["Total_Cost"]
     st.dataframe(
-        summary.style.format({
-            "Total_Cost":"${:.2f}",
-            "Current_Price":"${:.2f}",
-            "Current_Value":"${:.2f}",
-            "Gain/Loss":"${:.2f}"
-        }),
-        use_container_width=True
+      summary.style.format({
+        "Total_Cost":    "${:.2f}",
+        "Current_Price": "${:.2f}",
+        "Current_Value": "${:.2f}",
+        "Gain/Loss":     "${:.2f}"
+      }),
+      use_container_width=True
     )
-
-# -----------------------------------------------
-# 10. Allocation by Cost (Altair Pie)
-# -----------------------------------------------
-import altair as alt
-
-st.markdown("### 🧩 Allocation by Cost")
-if st.session_state.portfolio.empty:
-    st.info("No data to show allocation.")
 else:
+    st.info("No portfolio data to summarize.")
+
+# 10. Allocation by Cost (Altair Pie Chart)
+import altair as alt
+st.markdown("### 🧩 Allocation by Cost")
+if not st.session_state.portfolio.empty:
     port = (
         st.session_state.portfolio
-        .groupby("Ticker")["Cost"]
-        .sum()
-        .reset_index(name="Total Cost")
+         .groupby("Ticker")["Cost"]
+         .sum()
+         .reset_index(name="Total Cost")
     )
     pie = (
         alt.Chart(port)
-        .mark_arc(innerRadius=50, stroke="#fff")
-        .encode(
-            theta=alt.Theta("Total Cost:Q"),
-            color=alt.Color("Ticker:N", legend=alt.Legend(title="Ticker")),
-            tooltip=[alt.Tooltip("Ticker:N"), alt.Tooltip("Total Cost:Q",format="$,.2f")]
-        )
-        .properties(width=400, height=400)
+         .mark_arc(innerRadius=50, stroke="#fff")
+         .encode(
+             theta=alt.Theta("Total Cost:Q"),
+             color =alt.Color("Ticker:N", legend=alt.Legend(title="Ticker")),
+             tooltip=[
+               alt.Tooltip("Ticker:N"),
+               alt.Tooltip("Total Cost:Q", format="$,.2f")
+             ]
+         )
+         .properties(width=400, height=400)
     )
     st.altair_chart(pie, use_container_width=True)
-
-# -----------------------------------------------
-# 11. Cumulative Investment Over Time + Value
-# -----------------------------------------------
-st.markdown("### 📈 Cumulative Investment & Current Value Over Time")
-if st.session_state.portfolio.empty:
-    st.info("No data to chart.")
 else:
+    st.info("No portfolio data to display allocation.")
+
+# 11. Cumulative Investment Over Time + Overlay Current Value
+st.markdown("### 📈 Cumulative Investment & Current Value Over Time")
+if not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
     df["Buy Date"] = pd.to_datetime(df["Buy Date"])
     df = df.sort_values("Buy Date")
     df["Cumulative Cost"]  = df["Cost"].cumsum()
     tickers = df["Ticker"].unique().tolist()
-    curr_pr  = {t: get_current_price(t) for t in tickers}
-    cum_vals = []
-    units    = {}
-    for _,row in df.iterrows():
-        units.setdefault(row["Ticker"],0.0)
-        units[row["Ticker"]] += row["Shares"]
-        cum_vals.append(sum(units[t]*curr_pr[t] for t in units))
-    df["Cumulative Value"] = cum_vals
+    current_prices = {t: get_current_price(t) for t in tickers}
+    cum_values = []
+    total_units = {}
+    for _, row in df.iterrows():
+        total_units.setdefault(row["Ticker"], 0.0)
+        total_units[row["Ticker"]] += row["Shares"]
+        cv = sum(units * current_prices[t] for t, units in total_units.items())
+        cum_values.append(cv)
+    df["Cumulative Value"] = cum_values
     chart_df = df.set_index("Buy Date")[["Cumulative Cost","Cumulative Value"]]
     st.line_chart(chart_df)
-    total_c = df["Cost"].sum()
-    total_v = cum_vals[-1] if cum_vals else 0.0
-    gain    = total_v - total_c
-    pct     = (gain/total_c*100) if total_c else 0
-    c1,c2,c3 = st.columns(3)
-    c1.metric("💰 Invested",  f"${total_c:,.2f}")
-    c2.metric("📈 Value Now", f"${total_v:,.2f}")
-    c3.metric("📊 Gain/Loss", f"${gain:,.2f}", delta=f"{pct:.2f}%")
-
+    total_cost  = df["Cost"].sum()
+    total_value = cum_values[-1]
+    gain        = total_value - total_cost
+    gain_pct    = (gain / total_cost * 100) if total_cost else 0
+    c1, c2, c3 = st.columns(3)
+    c1.metric("💰 Invested",   f"${total_cost:,.2f}")
+    c2.metric("📈 Value Now",  f"${total_value:,.2f}")
+    c3.metric("📊 Gain/Loss",  f"${gain:,.2f}", delta=f"{gain_pct:.2f}%")
+else:
+    st.info("No portfolio data to display cumulative investment.")
