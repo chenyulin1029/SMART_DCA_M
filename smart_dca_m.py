@@ -7,18 +7,19 @@ import numpy as np
 import datetime
 import json
 import os
-import uuid   # ← NEW
+import uuid
 
 # -----------------------------------------------
-# 0. Per-session user_id for file isolation
+# Per-session user_id for file isolation
 # -----------------------------------------------
 if "user_id" not in st.session_state:
     st.session_state.user_id = str(uuid.uuid4())
-PORTFOLIO_FILE = f"portfolio_{st.session_state.user_id}.json"
-GLOBAL_FILE    = "portfolio.json"
-# -----------------------------------------------
+SESSION_FILE = f"portfolio_{st.session_state.user_id}.json"
+GLOBAL_FILE  = "portfolio.json"
 
+# -----------------------------------------------
 # 1. Load tickers
+# -----------------------------------------------
 @st.cache_data
 def load_valid_tickers():
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
@@ -26,26 +27,21 @@ def load_valid_tickers():
     return set(table['Symbol'].tolist() + ['QQQ', 'NVDA'])
 valid_tickers = load_valid_tickers()
 
+# -----------------------------------------------
 # 2. Utility functions
+# -----------------------------------------------
 def fetch_price(ticker, date):
-    df = yf.download(
-        ticker,
-        start=date - datetime.timedelta(days=200),
-        end=date + datetime.timedelta(days=1),
-        progress=False,
-        auto_adjust=False
-    )
+    df = yf.download(ticker,
+                     start=date - datetime.timedelta(days=200),
+                     end=date + datetime.timedelta(days=1),
+                     progress=False, auto_adjust=False)
     col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
     return float(df[col].loc[:pd.to_datetime(date)].iloc[-1])
 
 def get_current_price(ticker):
-    df = yf.download(
-        ticker,
-        period="2d",
-        interval="1d",
-        progress=False,
-        auto_adjust=False
-    )
+    df = yf.download(ticker,
+                     period="2d", interval="1d",
+                     progress=False, auto_adjust=False)
     col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
     return float(df[col].iloc[-1]) if not df.empty else 0.0
 
@@ -65,10 +61,12 @@ def get_last_trade_and_buy_dates():
         tentative += datetime.timedelta(days=1)
     return today, last_trade, tentative
 
+# -----------------------------------------------
 # 3. Smart DCA logic
+# -----------------------------------------------
 def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
     prices = {t: fetch_price(t, cutoff_date) for t in tickers}
-    raw = {}
+    raw    = {}
     for t in tickers:
         p0 = prices[t]
         p1 = fetch_price(t, cutoff_date - datetime.timedelta(days=30))
@@ -77,22 +75,20 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         r1, r3, r6 = p0/p1 - 1, p0/p3 - 1, p0/p6 - 1
         raw[t] = 0.2*r1 + 0.3*r3 + 0.5*r6
 
-    rotation = init_counts.copy()
+    rotation  = init_counts.copy()
     sorted_raw = sorted(raw.items(), key=lambda x: x[1], reverse=True)
 
-    for t, score in sorted_raw:
+    for t, _ in sorted_raw:
         if rotation.get(t, 0) < 3:
             candidate = t
             break
     else:
         candidate = sorted_raw[0][0]
-        for t in rotation:
-            rotation[t] = 0
+        for k in rotation: rotation[k] = 0
 
     rotation[candidate] += 1
-    for t in rotation:
-        if t != candidate:
-            rotation[t] = 0
+    for k in rotation:
+        if k != candidate: rotation[k] = 0
 
     price  = prices[candidate]
     shares = np.floor(invest_amt / price * 1000) / 1000
@@ -106,13 +102,26 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         "New Rotation": rotation
     }
 
-# --- Persistence helpers (loads global then per-session) ---
+# -----------------------------------------------
+# 4. Persistence helpers
+# -----------------------------------------------
 def load_portfolio():
-    # 1) If session file exists, load it
-    if os.path.exists(PORTFOLIO_FILE):
+    # Copy global->session on first load
+    if os.path.exists(GLOBAL_FILE) and not os.path.exists(SESSION_FILE):
         try:
-            with open(PORTFOLIO_FILE, "r") as f:
-                data = json.load(f)
+            with open(GLOBAL_FILE) as gf:
+                data = json.load(gf)
+            # write into session
+            with open(SESSION_FILE, "w") as sf:
+                json.dump(data, sf, indent=2)
+        except:
+            pass
+
+    # Now load session file
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE) as sf:
+                data = json.load(sf)
             df = pd.DataFrame(data)
             for col in ["Buy Date","Ticker","Price","Shares","Cost"]:
                 if col not in df.columns:
@@ -121,29 +130,6 @@ def load_portfolio():
         except:
             pass
 
-    # 2) Otherwise, if you committed a global 'portfolio.json', load that first
-    if os.path.exists(GLOBAL_FILE):
-        try:
-            with open(GLOBAL_FILE, "r") as f:
-                data = json.load(f)
-            df = pd.DataFrame(data)
-            for col in ["Buy Date","Ticker","Price","Shares","Cost"]:
-                if col not in df.columns:
-                    df[col] = np.nan
-            # write it into the session file
-            df2 = df.copy()
-            df2["Buy Date"] = df2["Buy Date"].astype(str)
-            df2["Ticker"]   = df2["Ticker"].astype(str)
-            df2["Price"]    = df2["Price"].astype(float)
-            df2["Shares"]   = df2["Shares"].astype(float)
-            df2["Cost"]     = df2["Cost"].astype(float)
-            with open(PORTFOLIO_FILE, "w") as f:
-                json.dump(df2.to_dict(orient="records"), f, indent=2)
-            return df[["Buy Date","Ticker","Price","Shares","Cost"]]
-        except:
-            pass
-
-    # 3) fallback to empty
     return pd.DataFrame(columns=["Buy Date","Ticker","Price","Shares","Cost"])
 
 def save_portfolio(df):
@@ -153,26 +139,26 @@ def save_portfolio(df):
     df2["Price"]    = df2["Price"].astype(float)
     df2["Shares"]   = df2["Shares"].astype(float)
     df2["Cost"]     = df2["Cost"].astype(float)
-    with open(PORTFOLIO_FILE, "w") as f:
-        json.dump(df2.to_dict(orient="records"), f, indent=2)
+    with open(SESSION_FILE, "w") as sf:
+        json.dump(df2.to_dict(orient="records"), sf, indent=2)
 
-# 4. UI Layout
+# -----------------------------------------------
+# 5. UI Layout
+# -----------------------------------------------
 st.title("📊 Smart DCA Investment Engine")
 
-# ensure rotation exists
-if "rotation" not in st.session_state:
-    st.session_state.rotation = {}
-
+# ticker inputs
 ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
 st.markdown("#### Or pick tickers from the universe")
 ticker_list = st.multiselect("Select Tickers",
     options=sorted(valid_tickers),
-    default=["QQQ","AAPL","NVDA"],
+    default=["QQQ","AAPL","NVDA"]
 )
 tickers_to_use = ticker_list if ticker_list else [
     t.strip().upper() for t in ticker_str.split(",") if t.strip()
 ]
 
+# amount
 preset     = st.radio("Choose Preset",["$450 (Default)","$600 (Future)"])
 custom_amt = st.number_input("Or enter custom amount",
                              min_value=0.0, max_value=5000.0,
@@ -180,23 +166,24 @@ custom_amt = st.number_input("Or enter custom amount",
 amount     = 450 if (custom_amt==0 and preset=="$450 (Default)") else \
              (600 if custom_amt==0 else custom_amt)
 
-cutoff_date = st.date_input("Cutoff Date",
-                value=get_last_trade_and_buy_dates()[1])
-buy_date    = st.date_input("Buy Date",
-                value=get_last_trade_and_buy_dates()[2])
+cutoff_date = st.date_input("Cutoff Date", value=get_last_trade_and_buy_dates()[1])
+buy_date    = st.date_input("Buy Date",   value=get_last_trade_and_buy_dates()[2])
 
+# rotation
 st.markdown("### Rotation Counts")
+if "rotation" not in st.session_state:
+    st.session_state.rotation = {}
 cols = st.columns(len(tickers_to_use))
 init_counts = {}
-for i,t in enumerate(tickers_to_use):
+for i, t in enumerate(tickers_to_use):
     default_ct = st.session_state.rotation.get(t, 0)
     init_counts[t] = cols[i].number_input(f"{t} Count", 0, 3, default_ct)
 
-# 5. load portfolio into session
+# load into session
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = load_portfolio()
 
-# 6. DCA Suggestion
+# 6. Smart DCA Suggestion
 if st.button("Suggest via Smart DCA"):
     try:
         tickers = validate_tickers(",".join(tickers_to_use))
@@ -210,20 +197,19 @@ if st.button("Suggest via Smart DCA"):
 # 7. Manual Entry
 st.markdown("### ➕ Manually Add Purchase")
 with st.form("manual_entry"):
-    md = st.date_input("Buy Date",     value=datetime.date.today())
-    mt = st.selectbox("Ticker",        sorted(valid_tickers))
-    mp = st.number_input("Buy Price",  min_value=0.01, step=0.01)
-    ms = st.number_input("Shares",     min_value=0.001, step=0.001)
+    md = st.date_input("Buy Date", value=datetime.date.today())
+    mt = st.selectbox("Ticker", sorted(valid_tickers))
+    mp = st.number_input("Buy Price", min_value=0.01, step=0.01)
+    ms = st.number_input("Shares",    min_value=0.001, step=0.001)
     if st.form_submit_button("Add Purchase"):
         cost = mp * ms
-        nr = {"Buy Date":str(md),
-              "Ticker":  mt,
-              "Price":   mp,
-              "Shares":  ms,
-              "Cost":    cost}
+        nr   = {"Buy Date":str(md),
+                "Ticker":  mt,
+                "Price":   mp,
+                "Shares":  ms,
+                "Cost":    cost}
         st.session_state.portfolio = pd.concat(
-            [st.session_state.portfolio,
-             pd.DataFrame([nr])],
+            [st.session_state.portfolio, pd.DataFrame([nr])],
             ignore_index=True
         )
         save_portfolio(st.session_state.portfolio)
@@ -232,8 +218,8 @@ with st.form("manual_entry"):
 # 8. Show/Edit/Delete Portfolio
 st.markdown("### 📜 Your Investment Portfolio")
 if not st.session_state.portfolio.empty:
-    editor_key = f"portfolio_editor_{len(st.session_state.portfolio)}"
-    edited_df = st.data_editor(
+    editor_key = f"editor_{len(st.session_state.portfolio)}"
+    edited_df  = st.data_editor(
         st.session_state.portfolio,
         num_rows="dynamic",
         use_container_width=True,
@@ -245,27 +231,23 @@ if not st.session_state.portfolio.empty:
         st.success("Portfolio updated and saved.")
 
     with st.expander("🗑️ Delete a Row"):
-        options = [
-            (i, f"{i}: {row.Ticker} on {row['Buy Date']} — {row.Shares} shares")
-            for i, row in st.session_state.portfolio.iterrows()
+        opts = [
+            (i, f"{i}: {r.Ticker} @ {r['Buy Date']} — {r.Shares} shares")
+            for i, r in st.session_state.portfolio.iterrows()
         ]
-        idx_list, labels = zip(*options)
-        to_delete = st.selectbox(
-            "Select row to delete",
-            options=idx_list,
-            format_func=lambda i: labels[idx_list.index(i)]
-        )
-        if st.button("Delete Selected Row", key="delete_row"):
+        idxs, labels = zip(*opts)
+        to_del = st.selectbox("Select row to delete", options=idxs,
+                              format_func=lambda i: labels[idxs.index(i)])
+        if st.button("Delete Selected Row", key="del"):
             st.session_state.portfolio = (
                 st.session_state.portfolio
-                  .drop(to_delete)
+                  .drop(to_del)
                   .reset_index(drop=True)
             )
             save_portfolio(st.session_state.portfolio)
-            st.success(f"Row {to_delete} deleted and saved.")
+            st.success(f"Row {to_del} deleted.")
 else:
-    st.info("No portfolio data available. Please add purchases.")
-
+    st.info("No portfolio data—add purchases above.")
 # 9. Summary
 st.markdown("### 📦 Portfolio Summary with Gain/Loss")
 if not st.session_state.portfolio.empty:
