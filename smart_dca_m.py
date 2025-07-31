@@ -13,14 +13,17 @@ import uuid
 # 0. Read or initialize user_id via query_params
 # -----------------------------------------------
 qs = st.query_params
+
 if "user_id" in qs and qs["user_id"]:
     user_id = qs["user_id"][0]
 else:
     user_id = str(uuid.uuid4())
-    st.experimental_set_query_params(user_id=user_id)
+    # use the new set_query_params API
+    st.set_query_params(user_id=user_id)
 
 SESSION_FILE = f"portfolio_{user_id}.json"
 GLOBAL_FILE  = "portfolio.json"
+
 
 # -----------------------------------------------
 # 1. Load tickers
