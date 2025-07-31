@@ -9,21 +9,21 @@ import json
 import os
 import uuid
 
-# -----------------------------------------------
-# 0. Read or initialize user_id via query_params
-# -----------------------------------------------
-qs = st.query_params
+import uuid
 
+# -----------------------------------------------
+# 0. Per-session user_id for file isolation
+# -----------------------------------------------
+qs = st.experimental_get_query_params()
 if "user_id" in qs and qs["user_id"]:
     user_id = qs["user_id"][0]
 else:
     user_id = str(uuid.uuid4())
-    # set it so this user gets their own file going forward
+    # Register it so this browser/tab keeps the same ID
     st.experimental_set_query_params(user_id=user_id)
 
 SESSION_FILE = f"portfolio_{user_id}.json"
 GLOBAL_FILE  = "portfolio.json"
-
 
 # -----------------------------------------------
 # 1. Load tickers
