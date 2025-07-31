@@ -202,22 +202,33 @@ if st.button("Suggest via Smart DCA", key="suggest_button"):
 
 # -----------------------------------------------
 # 7. Manual Entry
-# -----------------------------------------------
 st.markdown("### ➕ Manually Add Purchase")
-with st.form("manual_entry_form"):
-    md = st.date_input("Buy Date", value=datetime.date.today())
+
+# Use a named form and capture its submit button
+with st.form("manual_entry_form", clear_on_submit=True):
+    md = st.date_input("Buy Date (Manual)", value=datetime.date.today())
     mt = st.selectbox("Ticker", sorted(valid_tickers))
     mp = st.number_input("Buy Price", min_value=0.01, step=0.01)
-    ms = st.number_input("Shares",    min_value=0.001, step=0.001)
-    if st.form_submit_button("Add Purchase", key="add_purchase"):
-        cost = mp * ms
-        nr   = {"Buy Date":str(md), "Ticker":mt, "Price":mp, "Shares":ms, "Cost":cost}
-        st.session_state.portfolio = pd.concat(
-            [st.session_state.portfolio, pd.DataFrame([nr])],
-            ignore_index=True
-        )
-        save_portfolio(st.session_state.portfolio)
-        st.success("✅ Added & saved.")
+    ms = st.number_input("Shares", min_value=0.001, step=0.001)
+    # **This is the actual submit button for the above inputs**
+    submitted = st.form_submit_button("Add Purchase")
+
+if submitted:
+    cost = mp * ms
+    new_row = {
+        "Buy Date": str(md),
+        "Ticker":   mt,
+        "Price":    mp,
+        "Shares":   ms,
+        "Cost":     cost
+    }
+    st.session_state.portfolio = pd.concat(
+        [st.session_state.portfolio, pd.DataFrame([new_row])],
+        ignore_index=True
+    )
+    save_portfolio(st.session_state.portfolio)
+    st.success("✅ Purchase added and saved.")
+
 
 # -----------------------------------------------
 # 8. Show / Edit / Delete Portfolio
