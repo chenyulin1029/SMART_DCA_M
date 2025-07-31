@@ -10,11 +10,16 @@ import os
 import uuid
 
 # -----------------------------------------------
-# Per-session user_id for file isolation
+# 0. Read or initialize user_id via query_params
 # -----------------------------------------------
-if "user_id" not in st.session_state:
-    st.session_state.user_id = str(uuid.uuid4())
-SESSION_FILE = f"portfolio_{st.session_state.user_id}.json"
+qs = st.query_params
+if "user_id" in qs and qs["user_id"]:
+    user_id = qs["user_id"][0]
+else:
+    user_id = str(uuid.uuid4())
+    st.experimental_set_query_params(user_id=user_id)
+
+SESSION_FILE = f"portfolio_{user_id}.json"
 GLOBAL_FILE  = "portfolio.json"
 
 # -----------------------------------------------
@@ -22,110 +27,95 @@ GLOBAL_FILE  = "portfolio.json"
 # -----------------------------------------------
 @st.cache_data
 def load_valid_tickers():
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    table = pd.read_html(url)[0]
-    return set(table['Symbol'].tolist() + ['QQQ', 'NVDA'])
+    df = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
+    return set(df["Symbol"].tolist() + ["QQQ", "NVDA"])
 valid_tickers = load_valid_tickers()
 
 # -----------------------------------------------
 # 2. Utility functions
 # -----------------------------------------------
-def fetch_price(ticker, date):
-    df = yf.download(ticker,
-                     start=date - datetime.timedelta(days=200),
+def fetch_price(t, date):
+    df = yf.download(t, start=date - datetime.timedelta(days=200),
                      end=date + datetime.timedelta(days=1),
                      progress=False, auto_adjust=False)
-    col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+    col = "Adj Close" if "Adj Close" in df.columns else "Close"
     return float(df[col].loc[:pd.to_datetime(date)].iloc[-1])
 
-def get_current_price(ticker):
-    df = yf.download(ticker,
-                     period="2d", interval="1d",
-                     progress=False, auto_adjust=False)
-    col = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
+def get_current_price(t):
+    df = yf.download(t, period="2d", interval="1d", progress=False, auto_adjust=False)
+    col = "Adj Close" if "Adj Close" in df.columns else "Close"
     return float(df[col].iloc[-1]) if not df.empty else 0.0
 
-def validate_tickers(input_str):
-    tickers = [t.strip().upper() for t in input_str.split(',') if t.strip()]
-    invalid = [t for t in tickers if t not in valid_tickers]
-    if invalid:
-        raise ValueError(f"Invalid tickers: {invalid}")
-    return tickers
+def validate_tickers(s):
+    toks = [t.strip().upper() for t in s.split(",") if t.strip()]
+    bad = [t for t in toks if t not in valid_tickers]
+    if bad:
+        raise ValueError(f"Invalid tickers: {bad}")
+    return toks
 
 def get_last_trade_and_buy_dates():
     today = datetime.date.today()
     offset = 1 if today.weekday() >= 5 else 0
-    last_trade = today - datetime.timedelta(days=offset)
-    tentative = datetime.date(today.year, today.month, 15)
-    while tentative.weekday() >= 5:
-        tentative += datetime.timedelta(days=1)
-    return today, last_trade, tentative
+    lt = today - datetime.timedelta(days=offset)
+    bd = datetime.date(today.year, today.month, 15)
+    while bd.weekday() >= 5: bd += datetime.timedelta(days=1)
+    return today, lt, bd
 
 # -----------------------------------------------
 # 3. Smart DCA logic
 # -----------------------------------------------
-def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
-    prices = {t: fetch_price(t, cutoff_date) for t in tickers}
-    raw    = {}
-    for t in tickers:
+def run_dca(tks, counts, cd, bd, amt):
+    prices = {t: fetch_price(t, cd) for t in tks}
+    raw = {}
+    for t in tks:
         p0 = prices[t]
-        p1 = fetch_price(t, cutoff_date - datetime.timedelta(days=30))
-        p3 = fetch_price(t, cutoff_date - datetime.timedelta(days=90))
-        p6 = fetch_price(t, cutoff_date - datetime.timedelta(days=180))
-        r1, r3, r6 = p0/p1 - 1, p0/p3 - 1, p0/p6 - 1
+        p1 = fetch_price(t, cd - datetime.timedelta(days=30))
+        p3 = fetch_price(t, cd - datetime.timedelta(days=90))
+        p6 = fetch_price(t, cd - datetime.timedelta(days=180))
+        r1, r3, r6 = p0/p1-1, p0/p3-1, p0/p6-1
         raw[t] = 0.2*r1 + 0.3*r3 + 0.5*r6
 
-    rotation  = init_counts.copy()
+    rot = counts.copy()
     sorted_raw = sorted(raw.items(), key=lambda x: x[1], reverse=True)
-
-    for t, _ in sorted_raw:
-        if rotation.get(t, 0) < 3:
-            candidate = t
+    for t,_ in sorted_raw:
+        if rot.get(t,0) < 3:
+            cand = t
             break
     else:
-        candidate = sorted_raw[0][0]
-        for k in rotation: rotation[k] = 0
+        cand = sorted_raw[0][0]
+        for k in rot: rot[k]=0
 
-    rotation[candidate] += 1
-    for k in rotation:
-        if k != candidate: rotation[k] = 0
+    rot[cand] +=1
+    for k in rot:
+        if k!=cand: rot[k]=0
 
-    price  = prices[candidate]
-    shares = np.floor(invest_amt / price * 1000) / 1000
-    cost   = shares * price
+    price = prices[cand]
+    shares = np.floor(amt/price*1000)/1000
+    cost = shares*price
 
-    return {
-        "Buy Ticker":   candidate,
-        "Price":        price,
-        "Shares":       shares,
-        "Cost":         cost,
-        "New Rotation": rotation
-    }
+    return {"Buy Ticker":cand, "Price":price, "Shares":shares, "Cost":cost, "New Rotation":rot}
 
 # -----------------------------------------------
 # 4. Persistence helpers
 # -----------------------------------------------
 def load_portfolio():
-    # Copy global->session on first load
+    # on first use copy global file into the per‐user session file
     if os.path.exists(GLOBAL_FILE) and not os.path.exists(SESSION_FILE):
         try:
             with open(GLOBAL_FILE) as gf:
-                data = json.load(gf)
-            # write into session
-            with open(SESSION_FILE, "w") as sf:
-                json.dump(data, sf, indent=2)
+                jd = json.load(gf)
+            with open(SESSION_FILE,"w") as sf:
+                json.dump(jd, sf, indent=2)
         except:
             pass
 
-    # Now load session file
     if os.path.exists(SESSION_FILE):
         try:
             with open(SESSION_FILE) as sf:
-                data = json.load(sf)
-            df = pd.DataFrame(data)
-            for col in ["Buy Date","Ticker","Price","Shares","Cost"]:
-                if col not in df.columns:
-                    df[col] = np.nan
+                jd = json.load(sf)
+            df = pd.DataFrame(jd)
+            for c in ["Buy Date","Ticker","Price","Shares","Cost"]:
+                if c not in df: df[c]=np.nan
             return df[["Buy Date","Ticker","Price","Shares","Cost"]]
         except:
             pass
@@ -133,55 +123,95 @@ def load_portfolio():
     return pd.DataFrame(columns=["Buy Date","Ticker","Price","Shares","Cost"])
 
 def save_portfolio(df):
-    df2 = df.copy()
-    df2["Buy Date"] = df2["Buy Date"].astype(str)
-    df2["Ticker"]   = df2["Ticker"].astype(str)
-    df2["Price"]    = df2["Price"].astype(float)
-    df2["Shares"]   = df2["Shares"].astype(float)
-    df2["Cost"]     = df2["Cost"].astype(float)
-    with open(SESSION_FILE, "w") as sf:
-        json.dump(df2.to_dict(orient="records"), sf, indent=2)
+    d2 = df.copy()
+    d2["Buy Date"]=d2["Buy Date"].astype(str)
+    d2["Ticker"]=d2["Ticker"].astype(str)
+    d2["Price"]=d2["Price"].astype(float)
+    d2["Shares"]=d2["Shares"].astype(float)
+    d2["Cost"]=d2["Cost"].astype(float)
+    with open(SESSION_FILE,"w") as sf:
+        json.dump(d2.to_dict(orient="records"), sf, indent=2)
 
 # -----------------------------------------------
 # 5. UI Layout
 # -----------------------------------------------
 st.title("📊 Smart DCA Investment Engine")
 
-# ticker inputs
-ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
-st.markdown("#### Or pick tickers from the universe")
-ticker_list = st.multiselect("Select Tickers",
-    options=sorted(valid_tickers),
-    default=["QQQ","AAPL","NVDA"]
-)
-tickers_to_use = ticker_list if ticker_list else [
-    t.strip().upper() for t in ticker_str.split(",") if t.strip()
-]
+# Tickers input
+ticker_str = st.text_input("Enter Tickers", value="QQQ,AAPL,NVDA")
+st.markdown("#### … or pick from the universe")
+ticker_list = st.multiselect("Select Tickers", sorted(valid_tickers), default=["QQQ","AAPL","NVDA"])
+tickers_to_use = ticker_list if ticker_list else validate_tickers(ticker_str)
 
-# amount
-preset     = st.radio("Choose Preset",["$450 (Default)","$600 (Future)"])
-custom_amt = st.number_input("Or enter custom amount",
-                             min_value=0.0, max_value=5000.0,
-                             step=10.0, value=0.0)
-amount     = 450 if (custom_amt==0 and preset=="$450 (Default)") else \
-             (600 if custom_amt==0 else custom_amt)
+# Amount
+preset = st.radio("Preset", ["$450 (Default)","$600 (Future)"])
+custom = st.number_input("Or custom amount", 0.0,5000.0, step=10.0)
+amount = 450 if (custom==0 and preset=="$450 (Default)") else (600 if custom==0 else custom)
 
-cutoff_date = st.date_input("Cutoff Date", value=get_last_trade_and_buy_dates()[1])
-buy_date    = st.date_input("Buy Date",   value=get_last_trade_and_buy_dates()[2])
+today, lt, bd = get_last_trade_and_buy_dates()
+cutoff_date = st.date_input("Cutoff Date", lt)
+buy_date    = st.date_input("Buy Date",   bd)
 
-# rotation
+# Rotation counts
 st.markdown("### Rotation Counts")
 if "rotation" not in st.session_state:
-    st.session_state.rotation = {}
+    st.session_state.rotation = {t:0 for t in tickers_to_use}
 cols = st.columns(len(tickers_to_use))
 init_counts = {}
-for i, t in enumerate(tickers_to_use):
-    default_ct = st.session_state.rotation.get(t, 0)
-    init_counts[t] = cols[i].number_input(f"{t} Count", 0, 3, default_ct)
+for i,t in enumerate(tickers_to_use):
+    init_counts[t] = cols[i].number_input(f"{t}", 0,3, st.session_state.rotation.get(t,0))
 
-# load into session
+# Load portfolio
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = load_portfolio()
+
+# Suggestion
+if st.button("Suggest via Smart DCA"):
+    try:
+        res = run_dca(tickers_to_use, init_counts, cutoff_date, buy_date, amount)
+        st.write(res)
+        # … you can show your breakdown chart here …
+        st.session_state.rotation = res["New Rotation"]
+    except Exception as e:
+        st.error(e)
+
+# Manual entry
+st.markdown("### ➕ Manually Add Purchase")
+with st.form("m"):
+    md = st.date_input("Buy Date", value=datetime.date.today())
+    mt = st.selectbox("Ticker", sorted(valid_tickers))
+    mp = st.number_input("Price", 0.01, step=0.01)
+    ms = st.number_input("Shares",0.001,step=0.001)
+    if st.form_submit_button("Add"):
+        cost = mp*ms
+        nr = {"Buy Date":str(md),"Ticker":mt,"Price":mp,"Shares":ms,"Cost":cost}
+        st.session_state.portfolio = pd.concat(
+            [st.session_state.portfolio, pd.DataFrame([nr])],
+            ignore_index=True
+        )
+        save_portfolio(st.session_state.portfolio)
+        st.success("Saved")
+
+# Show/Edit/Delete
+st.markdown("### 📜 Your Investment Portfolio")
+if not st.session_state.portfolio.empty:
+    key = f"ed_{len(st.session_state.portfolio)}"
+    df2 = st.data_editor(st.session_state.portfolio, num_rows="dynamic", use_container_width=True, key=key)
+    if not df2.equals(st.session_state.portfolio):
+        st.session_state.portfolio = df2.reset_index(drop=True)
+        save_portfolio(st.session_state.portfolio)
+        st.success("Updated")
+    with st.expander("🗑️ Delete a Row"):
+        opts = [(i,f"{i}: {r.Ticker}@{r['Buy Date']}") for i,r in st.session_state.portfolio.iterrows()]
+        ids,labels = zip(*opts)
+        sel = st.selectbox("Delete row", options=ids, format_func=lambda i:labels[ids.index(i)])
+        if st.button("Delete"):
+            st.session_state.portfolio = st.session_state.portfolio.drop(sel).reset_index(drop=True)
+            save_portfolio(st.session_state.portfolio)
+            st.success("Deleted")
+else:
+    st.info("No purchases")
+
 
 # 6. Smart DCA Suggestion
 if st.button("Suggest via Smart DCA"):
