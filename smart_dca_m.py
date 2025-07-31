@@ -12,13 +12,9 @@ import uuid
 # -----------------------------------------------
 # 0. Per-session user_id for file isolation
 # -----------------------------------------------
-params = st.get_query_params()
-if "user_id" in params and params["user_id"]:
-    user_id = params["user_id"][0]
-else:
-    user_id = str(uuid.uuid4())
-    st.set_query_params(user_id=user_id)
-SESSION_FILE = f"portfolio_{user_id}.json"
+if "user_id" not in st.session_state:
+    st.session_state.user_id = str(uuid.uuid4())
+SESSION_FILE = f"portfolio_{st.session_state.user_id}.json"
 GLOBAL_FILE  = "portfolio.json"
 
 # -----------------------------------------------
@@ -116,7 +112,7 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
 # 4. Persistence helpers
 # -----------------------------------------------
 def load_portfolio():
-    # On first tab load, seed from GLOBAL_FILE
+    # seed session file from global if needed
     if os.path.exists(GLOBAL_FILE) and not os.path.exists(SESSION_FILE):
         try:
             with open(GLOBAL_FILE) as gf:
@@ -155,7 +151,7 @@ def save_portfolio(df):
 # -----------------------------------------------
 st.title("📊 Smart DCA Investment Engine")
 
-# Ticker entry + multiselect fallback
+# ticker entry + multiselect fallback
 ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
 st.markdown("#### Or pick tickers from the universe")
 ticker_list = st.multiselect(
@@ -167,7 +163,7 @@ tickers_to_use = ticker_list if ticker_list else [
     t.strip().upper() for t in ticker_str.split(",") if t.strip()
 ]
 
-# Amount controls
+# amount controls
 preset     = st.radio("Choose Preset", ["$450 (Default)", "$600 (Future)"])
 custom_amt = st.number_input("Or enter custom amount",
                              min_value=0.0, max_value=5000.0,
@@ -178,7 +174,7 @@ amount     = 450 if (custom_amt==0 and preset=="$450 (Default)") else \
 cutoff_date = st.date_input("Cutoff Date", value=get_last_trade_and_buy_dates()[1])
 buy_date    = st.date_input("Buy Date",   value=get_last_trade_and_buy_dates()[2])
 
-# Rotation Counts
+# rotation counts
 st.markdown("### Rotation Counts")
 if "rotation" not in st.session_state:
     st.session_state.rotation = {}
@@ -188,12 +184,12 @@ for i, t in enumerate(tickers_to_use):
     default_ct    = st.session_state.rotation.get(t, 0)
     init_counts[t] = cols[i].number_input(f"{t} Count", 0, 3, default_ct)
 
-# Load into session
+# load portfolio into session
 if "portfolio" not in st.session_state:
     st.session_state.portfolio = load_portfolio()
 
 # -----------------------------------------------
-# 6. Smart DCA Suggestion (no state change)
+# 6. Suggest via Smart DCA (no data mutation)
 # -----------------------------------------------
 if st.button("Suggest via Smart DCA", key="suggest_button"):
     try:
@@ -201,7 +197,6 @@ if st.button("Suggest via Smart DCA", key="suggest_button"):
         res     = run_dca(tickers, init_counts, cutoff_date, buy_date, amount)
         st.success("✅ Suggestion:")
         st.write(res)
-        # … you can re-insert your momentum breakdown & chart here …
     except Exception as e:
         st.error(f"❌ {e}")
 
@@ -260,7 +255,6 @@ if not st.session_state.portfolio.empty:
             )
             save_portfolio(st.session_state.portfolio)
             st.success(f"✅ Row {to_del} deleted & saved.")
-
 else:
     st.info("No portfolio data—please add purchases above.")
 
@@ -268,7 +262,7 @@ else:
 # 9. Portfolio Summary
 # -----------------------------------------------
 st.markdown("### 📦 Portfolio Summary with Gain/Loss")
-if st.session_state.portfolio.any(axis=None):
+if not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
     tickers = df["Ticker"].unique()
     current_prices = {t: get_current_price(t) for t in tickers}
@@ -295,7 +289,7 @@ else:
 # -----------------------------------------------
 import altair as alt
 st.markdown("### 🧩 Allocation by Cost")
-if st.session_state.portfolio.any(axis=None):
+if not st.session_state.portfolio.empty:
     port = (
         st.session_state.portfolio
          .groupby("Ticker")["Cost"]
@@ -307,7 +301,7 @@ if st.session_state.portfolio.any(axis=None):
          .mark_arc(innerRadius=50, stroke="#fff")
          .encode(
              theta=alt.Theta("Total Cost:Q"),
-             color =alt.Color("Ticker:N", legend=alt.Legend(title="Ticker")),
+             color=alt.Color("Ticker:N", legend=alt.Legend(title="Ticker")),
              tooltip=[
                alt.Tooltip("Ticker:N"),
                alt.Tooltip("Total Cost:Q", format="$,.2f")
@@ -323,13 +317,15 @@ else:
 # 11. Cumulative Investment Over Time
 # -----------------------------------------------
 st.markdown("### 📈 Cumulative Investment & Current Value Over Time")
-if st.session_state.portfolio.any(axis=None):
+if not st.session_state.portfolio.empty:
     df = st.session_state.portfolio.copy()
-    df["Buy Date"] = pd.to_datetime(df["Buy Date"])
+    df["Buy Date"]    = pd.to_datetime(df["Buy Date"])
     df = df.sort_values("Buy Date")
     df["Cumulative Cost"] = df["Cost"].cumsum()
+
     tickers = df["Ticker"].unique().tolist()
     current_prices = {t: get_current_price(t) for t in tickers}
+
     cum_values = []
     total_units = {}
     for _, row in df.iterrows():
@@ -337,11 +333,13 @@ if st.session_state.portfolio.any(axis=None):
         total_units[row["Ticker"]] += row["Shares"]
         cv = sum(units * current_prices[t] for t, units in total_units.items())
         cum_values.append(cv)
+
     df["Cumulative Value"] = cum_values
-    chart_df = df.set_index("Buy Date")[["Cumulative Cost", "Cumulative Value"]]
+    chart_df = df.set_index("Buy Date")[["Cumulative Cost","Cumulative Value"]]
     st.line_chart(chart_df)
+
     total_cost  = df["Cost"].sum()
-    total_value = cum_values[-1] if cum_values else 0.0
+    total_value = cum_values[-1]
     gain        = total_value - total_cost
     gain_pct    = (gain / total_cost * 100) if total_cost else 0
     c1, c2, c3 = st.columns(3)
@@ -349,4 +347,5 @@ if st.session_state.portfolio.any(axis=None):
     c2.metric("📈 Value Now",  f"${total_value:,.2f}")
     c3.metric("📊 Gain/Loss",  f"${gain:,.2f}", delta=f"{gain_pct:.2f}%")
 else:
-    st.info("No portfolio data to display cumulative investment.") 
+    st.info("No portfolio data to display cumulative investment.")
+
