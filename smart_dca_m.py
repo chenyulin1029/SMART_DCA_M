@@ -8,6 +8,16 @@ import datetime
 import json
 import os
 
+# ————————————————
+# 👤 Per-user session isolation
+# ————————————————
+# Read the “session_id” query param, defaulting to “default”
+query_params = st.experimental_get_query_params()
+session_id   = query_params.get("session_id", ["default"])[0]
+
+# Now everywhere we refer to the portfolio file or st.session_state,
+# we’ll key it by session_id.
+
 # 1. Load tickers
 @st.cache_data
 def load_valid_tickers():
@@ -87,8 +97,8 @@ def run_dca(tickers, init_counts, cutoff_date, buy_date, invest_amt):
         "New Rotation": rotation
     }
 
-# --- Persistence helper functions ---
-PORTFOLIO_FILE = "portfolio.json"
+# --- Persistence helper functions (per-user) ---
+PORTFOLIO_FILE = f"portfolio_{session_id}.json"
 
 def load_portfolio():
     if os.path.exists(PORTFOLIO_FILE):
@@ -163,8 +173,11 @@ for idx, t in enumerate(tickers_to_use):
 
 
 # 5. Session State Init & Load Portfolio
-if "portfolio" not in st.session_state:
-    st.session_state.portfolio = load_portfolio()
+ps_key = f"portfolio_{session_id}"
+if ps_key not in st.session_state:
+    st.session_state[ps_key] = load_portfolio()
+# and throughout the app replace st.session_state.portfolio with st.session_state[ps_key]
+
 if "rotation" not in st.session_state:
     st.session_state.rotation = {"QQQ": 0, "AAPL": 0, "NVDA": 0}
 
