@@ -24,7 +24,7 @@ GLOBAL_FILE  = "portfolio.json"
 def load_valid_tickers():
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     table = pd.read_html(url)[0]
-    return set(table['Symbol'].tolist() + ['QQQ', 'NVDA'])
+    return set(table['Symbol'].tolist() + ['QQQ', 'NVDA', 'MSFT'])
 valid_tickers = load_valid_tickers()
 
 # -----------------------------------------------
@@ -152,12 +152,12 @@ def save_portfolio(df):
 st.title("📊 Smart DCA Investment Engine")
 
 # ticker entry + multiselect fallback
-ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,AAPL,NVDA")
+ticker_str = st.text_input("Enter Tickers (comma-separated)", value="QQQ,NVDA,MSFT")
 st.markdown("#### Or pick tickers from the universe")
 ticker_list = st.multiselect(
     "Select Tickers",
     options=sorted(valid_tickers),
-    default=["QQQ","AAPL","NVDA"]
+    default=["QQQ","NVDA","MSFT"]
 )
 tickers_to_use = ticker_list if ticker_list else [
     t.strip().upper() for t in ticker_str.split(",") if t.strip()
@@ -202,15 +202,13 @@ if st.button("Suggest via Smart DCA", key="suggest_button"):
 
 # -----------------------------------------------
 # 7. Manual Entry
+# -----------------------------------------------
 st.markdown("### ➕ Manually Add Purchase")
-
-# Use a named form and capture its submit button
 with st.form("manual_entry_form", clear_on_submit=True):
     md = st.date_input("Buy Date (Manual)", value=datetime.date.today())
     mt = st.selectbox("Ticker", sorted(valid_tickers))
     mp = st.number_input("Buy Price", min_value=0.01, step=0.01)
     ms = st.number_input("Shares", min_value=0.001, step=0.001)
-    # **This is the actual submit button for the above inputs**
     submitted = st.form_submit_button("Add Purchase")
 
 if submitted:
@@ -228,7 +226,6 @@ if submitted:
     )
     save_portfolio(st.session_state.portfolio)
     st.success("✅ Purchase added and saved.")
-
 
 # -----------------------------------------------
 # 8. Show / Edit / Delete Portfolio
@@ -359,4 +356,3 @@ if not st.session_state.portfolio.empty:
     c3.metric("📊 Gain/Loss",  f"${gain:,.2f}", delta=f"{gain_pct:.2f}%")
 else:
     st.info("No portfolio data to display cumulative investment.")
-
